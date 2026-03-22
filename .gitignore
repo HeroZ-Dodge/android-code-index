@@ -30,3 +30,6 @@ Thumbs.db
 # Spec / local docs
 specs/
 .specify/
+
+# Root markdown docs
+/*.md
