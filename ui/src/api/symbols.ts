@@ -9,14 +9,14 @@ export const getSubclasses = (className: string, directOnly = false, limit = 50)
     .get(`/classes/${encodeURIComponent(className)}/subclasses`, {
       params: { direct_only: directOnly, limit },
     })
-    .then((r) => r.data)
+    .then((r) => r.data)  // 后端直接返回 Symbol[]
 
 export const getImplementations = (interfaceName: string, module?: string, limit = 50): Promise<Symbol[]> =>
   client
     .get(`/interfaces/${encodeURIComponent(interfaceName)}/implementations`, {
       params: { module, limit },
     })
-    .then((r) => r.data)
+    .then((r) => r.data)  // 后端直接返回 Symbol[]
 
 export const getClassApi = (className: string, includePrivate = false): Promise<Symbol[]> =>
   client

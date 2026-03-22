@@ -28,6 +28,9 @@ const filteredModules = computed(() =>
 )
 
 async function selectMod(mod: string) {
+  // 切换模块时清空已展开的文件
+  expandedFiles.value = {}
+  fileError.value = {}
   await store.selectModule(mod)
   router.replace({ path: `/modules/${encodeURIComponent(mod)}` })
 }
@@ -35,18 +38,28 @@ async function selectMod(mod: string) {
 // 文件树：每个文件的展开符号
 const expandedFiles = ref<Record<string, Symbol[]>>({})
 const loadingFile = ref<string | null>(null)
+const fileError = ref<Record<string, string>>({})
 
 async function toggleFile(file: ModuleFile) {
   const key = file.file_path
   if (expandedFiles.value[key]) {
     delete expandedFiles.value[key]
+    delete fileError.value[key]
     return
   }
   loadingFile.value = key
+  delete fileError.value[key]
   try {
-    // 去掉开头 / 以匹配路由路径格式
-    const symbols = await getFileSymbols(file.file_path.replace(/^\//, ''))
+    // 去掉开头 / 以匹配路由路径格式，并进行 URL 编码
+    const encodedPath = encodeURIComponent(file.file_path.replace(/^\//, ''))
+    const symbols = await getFileSymbols(encodedPath)
     expandedFiles.value[key] = symbols
+    if (symbols.length === 0) {
+      fileError.value[key] = '该文件无符号'
+    }
+  } catch (e: any) {
+    fileError.value[key] = e?.message ?? '加载符号失败'
+    console.error('加载文件符号失败:', file.file_path, e)
   } finally {
     loadingFile.value = null
   }
@@ -150,7 +163,7 @@ const depSyntaxType = (syntax: string) =>
                       style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; cursor: pointer; background: #fff; border: 1px solid #e5e7eb"
                     >
                       <el-icon :style="{ color: loadingFile === file.file_path ? '#9ca3af' : '#6b7280' }">
-                        <component :is="expandedFiles[file.file_path] ? 'FolderOpened' : 'Document'" />
+                        <component :is="expandedFiles[file.file_path] ? 'FolderOpened' : loadingFile === file.file_path ? 'Loading' : 'Document'" />
                       </el-icon>
                       <span style="font-family: monospace; font-size: 12px; flex: 1">
                         {{ file.file_path.split('/').pop() }}
@@ -159,18 +172,28 @@ const depSyntaxType = (syntax: string) =>
                       <el-tag size="small">{{ file.symbol_count }}</el-tag>
                     </div>
 
+                    <!-- 加载状态 -->
+                    <div v-if="loadingFile === file.file_path" style="margin-left: 24px; margin-top: 4px; color: #9ca3af; font-size: 12px">
+                      加载中...
+                    </div>
+
+                    <!-- 错误提示 -->
+                    <div v-if="fileError[file.file_path]" style="margin-left: 24px; margin-top: 4px; color: #ef4444; font-size: 12px">
+                      {{ fileError[file.file_path] }}
+                    </div>
+
                     <!-- 展开的符号列表 -->
                     <div v-if="expandedFiles[file.file_path]" style="margin-left: 24px; margin-top: 4px">
                       <div
                         v-for="sym in expandedFiles[file.file_path]"
                         :key="sym.id"
                         @click="drawer.open(sym)"
-                        style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 4px; cursor: pointer"
+                        style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 4px; cursor: pointer; transition: background 0.15s"
                         class="sym-row"
                       >
-                        <SymbolTag :kind="sym.kind" />
-                        <span style="font-size: 13px">{{ sym.name }}</span>
-                        <span style="font-size: 11px; color: #9ca3af">{{ sym.visibility }}</span>
+                        <SymbolTag :kind="sym.kind" style="pointer-events: none" />
+                        <span style="font-size: 13px; pointer-events: none">{{ sym.name }}</span>
+                        <span style="font-size: 11px; color: #9ca3af; pointer-events: none">{{ sym.visibility }}</span>
                       </div>
                     </div>
                   </div>
@@ -215,4 +238,5 @@ const depSyntaxType = (syntax: string) =>
 
 <style scoped>
 .sym-row:hover { background: #f3f4f6; }
+.sym-row:active { background: #e5e7eb; }
 </style>

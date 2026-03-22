@@ -31,48 +31,93 @@ class QueryEngine:
         offset: int = 0,
     ) -> dict[str, Any]:
         """
-        符号名子串搜索，返回 {total, items}。
+        符号名全文搜索，返回 {total, items, search_time_ms}。
 
-        用 LIKE '%keyword%' 做名称子串匹配，结果按相关度排序：
-          0 = 完全等于 keyword
-          1 = 以 keyword 开头（前缀）
-          2 = 包含 keyword（中间/尾部）
-        keyword 和 name 均转小写比较，忽略大小写。
+        使用 FTS5 全文搜索 + BM25 排序，支持：
+          - 前缀搜索：Activity → Activity, ActivityManager, ActivityCompat
+          - 多词搜索：Base Activity → 同时包含 Base 和 Activity 的结果
+          - 精确搜索："Activity" → 完全匹配 Activity
+
+        多因子排序 = BM25 相关度 + 类型权重 (class>function>property) + 名称长度惩罚
+
+        注意：FTS5 查询限定在 name 字段，避免 annotations/qualified_name 中的干扰匹配
         """
-        kw_lower = keyword.lower()
-        filters: list[str] = ["LOWER(name) LIKE ?"]
-        params: list[Any] = [f"%{kw_lower}%"]
+        import time
+        start = time.perf_counter()
+
+        # 构建 FTS5 查询语句
+        # 检测是否为精确搜索（带双引号）
+        if keyword.startswith('"') and keyword.endswith('"'):
+            # 精确短语匹配（在 name 字段）
+            fts_query = f'name:"{keyword[1:-1]}"'
+        else:
+            # 默认前缀搜索 + 多词支持（仅在 name 字段）
+            # 空格分隔的每个词都做前缀匹配
+            terms = keyword.split()
+            fts_terms = []
+            for term in terms:
+                # 转义 FTS5 特殊字符
+                term = term.replace('"', '""').replace('*', '\\*')
+                fts_terms.append(f'name:{term}*')
+            fts_query = ' '.join(fts_terms)
+
+        # 构建过滤条件
+        filters: list[str] = []
+        filter_params: list[Any] = []
 
         if kind:
-            filters.append("kind = ?")
-            params.append(kind)
+            filters.append("s.kind = ?")
+            filter_params.append(kind)
         if module:
-            filters.append("module = ?")
-            params.append(module)
+            filters.append("s.module = ?")
+            filter_params.append(module)
 
-        where = "WHERE " + " AND ".join(filters)
+        where_clause = ""
+        if filters:
+            where_clause = " AND " + " AND ".join(filters)
 
-        count_sql = f"SELECT COUNT(*) FROM symbols {where}"
-        total = self.conn.execute(count_sql, params).fetchone()[0]
+        # 计数查询：使用 CROSS JOIN 优化性能（与主查询一致）
+        count_sql = f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT ft.rowid AS match_id
+                FROM symbols_fts ft
+                WHERE symbols_fts MATCH ?
+            ) fts_matches
+            CROSS JOIN symbols s
+            WHERE s.id = fts_matches.match_id {where_clause}
+        """
+        total = self.conn.execute(count_sql, [fts_query] + filter_params).fetchone()[0]
 
-        # 排序：精确 > 前缀 > 中间/后缀
+        # 主查询：使用 CROSS JOIN 优化性能
+        # 问题：原始 JOIN + WHERE 方式会导致 SQLite 优先使用 kind 索引而非 FTS5，造成性能下降（900ms+）
+        # 解决：使用 CROSS JOIN 将 kind/module 过滤放到 WHERE 子句，强制 SQLite 先执行 FTS5 过滤
+        # 参考：https://www.sqlite.org/optoverview.html#joins
         sql = f"""
-            SELECT *,
-                CASE
-                    WHEN LOWER(name) = ?              THEN 0
-                    WHEN LOWER(name) LIKE ?           THEN 1
-                    ELSE                                   2
-                END AS _rank
-            FROM symbols
-            {where}
-            ORDER BY _rank, LENGTH(name), name
+            SELECT s.*
+            FROM (
+                SELECT ft.rowid AS match_id, bm25(symbols_fts, 10.0, 10.0, 1.0, 1.0) AS score
+                FROM symbols_fts ft
+                WHERE symbols_fts MATCH ?
+            ) fts_matches
+            CROSS JOIN symbols s
+            WHERE s.id = fts_matches.match_id {where_clause}
+            ORDER BY fts_matches.score DESC, LENGTH(s.name), s.name
             LIMIT ? OFFSET ?
         """
-        rank_params = [kw_lower, f"{kw_lower}%"]
         rows = self.conn.execute(
-            sql, rank_params + params + [limit, offset]
+            sql, [fts_query] + filter_params + [limit, offset]
         ).fetchall()
-        return {"total": total, "items": [_row_to_dict(r) for r in rows]}
+
+        # 移除内部排序字段
+        items = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d.pop("_score", None)
+            items.append(d)
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        return {"total": total, "items": items, "search_time_ms": round(elapsed_ms, 2)}
 
     def find_class(
         self,
@@ -83,7 +128,7 @@ class QueryEngine:
         source_set: str | None = None,
         limit: int = 20,
         offset: int = 0,
-    ) -> list[dict]:
+    ) -> dict[str, Any]:
         filters = ["kind IN ('class', 'interface', 'object')"]
         params: list[Any] = []
 
@@ -104,9 +149,33 @@ class QueryEngine:
             params.append(source_set)
 
         where = "WHERE " + " AND ".join(filters)
-        sql = f"SELECT * FROM symbols {where} LIMIT ? OFFSET ?"
-        rows = self.conn.execute(sql, params + [limit, offset]).fetchall()
-        return [_row_to_dict(r) for r in rows]
+
+        # 计数
+        count_sql = f"SELECT COUNT(*) FROM symbols {where}"
+        total = self.conn.execute(count_sql, params).fetchone()[0]
+
+        # 查询并排序：名称匹配度 + 类型权重
+        sql = f"""
+            SELECT *,
+                CASE
+                    WHEN name = ? THEN 0
+                    WHEN name LIKE ? THEN 1
+                    ELSE 2
+                END AS _match_order
+            FROM symbols {where}
+            ORDER BY _match_order, LENGTH(name), name
+            LIMIT ? OFFSET ?
+        """
+        order_params = [name, f"%{name}%"] if name else []
+        rows = self.conn.execute(sql, params + order_params + [limit, offset]).fetchall()
+
+        items = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d.pop("_match_order", None)
+            items.append(d)
+
+        return {"total": total, "items": items}
 
     def find_function(
         self,
@@ -118,7 +187,7 @@ class QueryEngine:
         source_set: str | None = None,
         limit: int = 20,
         offset: int = 0,
-    ) -> list[dict]:
+    ) -> dict[str, Any]:
         filters = ["kind = 'function'"]
         params: list[Any] = []
 
@@ -142,9 +211,33 @@ class QueryEngine:
             params.append(source_set)
 
         where = "WHERE " + " AND ".join(filters)
-        sql = f"SELECT * FROM symbols {where} LIMIT ? OFFSET ?"
-        rows = self.conn.execute(sql, params + [limit, offset]).fetchall()
-        return [_row_to_dict(r) for r in rows]
+
+        # 计数
+        count_sql = f"SELECT COUNT(*) FROM symbols {where}"
+        total = self.conn.execute(count_sql, params).fetchone()[0]
+
+        # 查询并排序
+        sql = f"""
+            SELECT *,
+                CASE
+                    WHEN name = ? THEN 0
+                    WHEN name LIKE ? THEN 1
+                    ELSE 2
+                END AS _match_order
+            FROM symbols {where}
+            ORDER BY _match_order, LENGTH(name), name
+            LIMIT ? OFFSET ?
+        """
+        order_params = [name, f"%{name}%"] if name else []
+        rows = self.conn.execute(sql, params + order_params + [limit, offset]).fetchall()
+
+        items = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d.pop("_match_order", None)
+            items.append(d)
+
+        return {"total": total, "items": items}
 
     def find_interface(
         self,
@@ -153,7 +246,7 @@ class QueryEngine:
         source_set: str | None = None,
         limit: int = 20,
         offset: int = 0,
-    ) -> list[dict]:
+    ) -> dict[str, Any]:
         filters = ["kind = 'interface'"]
         params: list[Any] = []
 
@@ -168,9 +261,33 @@ class QueryEngine:
             params.append(source_set)
 
         where = "WHERE " + " AND ".join(filters)
-        sql = f"SELECT * FROM symbols {where} LIMIT ? OFFSET ?"
-        rows = self.conn.execute(sql, params + [limit, offset]).fetchall()
-        return [_row_to_dict(r) for r in rows]
+
+        # 计数
+        count_sql = f"SELECT COUNT(*) FROM symbols {where}"
+        total = self.conn.execute(count_sql, params).fetchone()[0]
+
+        # 查询并排序
+        sql = f"""
+            SELECT *,
+                CASE
+                    WHEN name = ? THEN 0
+                    WHEN name LIKE ? THEN 1
+                    ELSE 2
+                END AS _match_order
+            FROM symbols {where}
+            ORDER BY _match_order, LENGTH(name), name
+            LIMIT ? OFFSET ?
+        """
+        order_params = [name, f"%{name}%"] if name else []
+        rows = self.conn.execute(sql, params + order_params + [limit, offset]).fetchall()
+
+        items = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d.pop("_match_order", None)
+            items.append(d)
+
+        return {"total": total, "items": items}
 
     def get_file_symbols(self, file_path: str) -> list[dict]:
         """返回指定文件中的所有符号。file_path 必须为绝对路径。"""
@@ -325,7 +442,7 @@ class QueryEngine:
         module: str | None = None,
         view_id: str | None = None,
         limit: int = 20,
-    ) -> list[dict]:
+    ) -> dict[str, Any]:
         filters = ["kind IN ('layout', 'view_id')"]
         params: list[Any] = []
 
@@ -340,9 +457,17 @@ class QueryEngine:
             params.append(f"%{view_id}%")
 
         where = "WHERE " + " AND ".join(filters)
+
+        # 计数
+        count_sql = f"SELECT COUNT(*) FROM symbols {where}"
+        total = self.conn.execute(count_sql, params).fetchone()[0]
+
+        # 查询
         sql = f"SELECT * FROM symbols {where} LIMIT ?"
         rows = self.conn.execute(sql, params + [limit]).fetchall()
-        return [_row_to_dict(r) for r in rows]
+
+        items = [_row_to_dict(r) for r in rows]
+        return {"total": total, "items": items}
 
     def find_string(
         self,
@@ -350,7 +475,7 @@ class QueryEngine:
         value: str | None = None,
         module: str | None = None,
         limit: int = 20,
-    ) -> list[dict]:
+    ) -> dict[str, Any]:
         filters = ["kind = 'string_res'"]
         params: list[Any] = []
 
@@ -366,9 +491,17 @@ class QueryEngine:
             params.append(module)
 
         where = "WHERE " + " AND ".join(filters)
+
+        # 计数
+        count_sql = f"SELECT COUNT(*) FROM symbols {where}"
+        total = self.conn.execute(count_sql, params).fetchone()[0]
+
+        # 查询
         sql = f"SELECT * FROM symbols {where} LIMIT ?"
         rows = self.conn.execute(sql, params + [limit]).fetchall()
-        return [_row_to_dict(r) for r in rows]
+
+        items = [_row_to_dict(r) for r in rows]
+        return {"total": total, "items": items}
 
     def find_manifest_component(
         self,
@@ -376,7 +509,7 @@ class QueryEngine:
         component_type: str | None = None,
         module: str | None = None,
         limit: int = 20,
-    ) -> list[dict]:
+    ) -> dict[str, Any]:
         filters = ["kind = 'manifest_component'"]
         params: list[Any] = []
 
@@ -392,9 +525,17 @@ class QueryEngine:
             params.append(module)
 
         where = "WHERE " + " AND ".join(filters)
+
+        # 计数
+        count_sql = f"SELECT COUNT(*) FROM symbols {where}"
+        total = self.conn.execute(count_sql, params).fetchone()[0]
+
+        # 查询
         sql = f"SELECT * FROM symbols {where} LIMIT ?"
         rows = self.conn.execute(sql, params + [limit]).fetchall()
-        return [_row_to_dict(r) for r in rows]
+
+        items = [_row_to_dict(r) for r in rows]
+        return {"total": total, "items": items}
 
     # ──────────────────────────────────────────────
     # 批次 3 (P2) 方法
@@ -483,7 +624,7 @@ class QueryEngine:
         name: str | None = None,
         module: str | None = None,
         limit: int = 20,
-    ) -> list[dict]:
+    ) -> dict[str, Any]:
         filters = ["kind = 'style'"]
         params: list[Any] = []
 
@@ -495,9 +636,17 @@ class QueryEngine:
             params.append(module)
 
         where = "WHERE " + " AND ".join(filters)
+
+        # 计数
+        count_sql = f"SELECT COUNT(*) FROM symbols {where}"
+        total = self.conn.execute(count_sql, params).fetchone()[0]
+
+        # 查询
         sql = f"SELECT * FROM symbols {where} LIMIT ?"
         rows = self.conn.execute(sql, params + [limit]).fetchall()
-        return [_row_to_dict(r) for r in rows]
+
+        items = [_row_to_dict(r) for r in rows]
+        return {"total": total, "items": items}
 
     def find_color(
         self,
@@ -505,7 +654,7 @@ class QueryEngine:
         value: str | None = None,
         module: str | None = None,
         limit: int = 20,
-    ) -> list[dict]:
+    ) -> dict[str, Any]:
         filters = ["kind = 'color_res'"]
         params: list[Any] = []
 
@@ -520,9 +669,17 @@ class QueryEngine:
             params.append(module)
 
         where = "WHERE " + " AND ".join(filters)
+
+        # 计数
+        count_sql = f"SELECT COUNT(*) FROM symbols {where}"
+        total = self.conn.execute(count_sql, params).fetchone()[0]
+
+        # 查询
         sql = f"SELECT * FROM symbols {where} LIMIT ?"
         rows = self.conn.execute(sql, params + [limit]).fetchall()
-        return [_row_to_dict(r) for r in rows]
+
+        items = [_row_to_dict(r) for r in rows]
+        return {"total": total, "items": items}
 
     # ──────────────────────────────────────────────
     # Vue UI 扩展方法 (Phase 0)
@@ -614,7 +771,7 @@ class QueryEngine:
         value: str | None = None,
         module: str | None = None,
         limit: int = 20,
-    ) -> list[dict]:
+    ) -> dict[str, Any]:
         filters = ["kind = 'dimen_res'"]
         params: list[Any] = []
 
@@ -629,9 +786,17 @@ class QueryEngine:
             params.append(module)
 
         where = "WHERE " + " AND ".join(filters)
+
+        # 计数
+        count_sql = f"SELECT COUNT(*) FROM symbols {where}"
+        total = self.conn.execute(count_sql, params).fetchone()[0]
+
+        # 查询
         sql = f"SELECT * FROM symbols {where} LIMIT ?"
         rows = self.conn.execute(sql, params + [limit]).fetchall()
-        return [_row_to_dict(r) for r in rows]
+
+        items = [_row_to_dict(r) for r in rows]
+        return {"total": total, "items": items}
 
     def project_stats(self) -> dict[str, Any]:
         """返回整体项目统计信息。"""
