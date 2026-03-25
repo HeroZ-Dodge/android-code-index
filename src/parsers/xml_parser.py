@@ -34,13 +34,10 @@ def _strip_id_prefix(value: str | None) -> str | None:
 
 def _parse_layout(root_element, file_path: str, module: str,
                   source_set: str) -> list[dict]:
-    """提取根布局类型和所有 android:id View。"""
-    symbols = []
+    """提取根布局类型（不解析 view_id）。"""
     file_name = Path(file_path).stem
-
-    # 根布局符号
     root_tag = root_element.tag.split("}")[-1] if "}" in root_element.tag else root_element.tag
-    symbols.append({
+    return [{
         "name": file_name,
         "qualified_name": f"{module}.layout.{file_name}",
         "kind": "layout",
@@ -49,101 +46,7 @@ def _parse_layout(root_element, file_path: str, module: str,
         "source_set": source_set,
         "line_number": 1,
         "extra": json.dumps({"root_view": root_tag}, ensure_ascii=False),
-    })
-
-    # 遍历所有节点，提取 android:id
-    for elem in root_element.iter():
-        view_id = _strip_id_prefix(_android_attr(elem, "id"))
-        if not view_id:
-            continue
-        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-        symbols.append({
-            "name": view_id,
-            "qualified_name": f"{module}.layout.{file_name}.{view_id}",
-            "kind": "view_id",
-            "module": module,
-            "file_path": file_path,
-            "source_set": source_set,
-            "line_number": None,
-            "extra": json.dumps({"view_type": tag}, ensure_ascii=False),
-        })
-
-    return symbols
-
-
-# ──────────────────────────────────────────────
-# strings.xml 解析
-# ──────────────────────────────────────────────
-
-def _parse_strings(root_element, file_path: str, module: str,
-                   source_set: str) -> list[dict]:
-    symbols = []
-    for elem in root_element.iter("string"):
-        name = elem.get("name")
-        if not name:
-            continue
-        value = "".join(elem.itertext())
-        symbols.append({
-            "name": name,
-            "qualified_name": f"{module}.string.{name}",
-            "kind": "string_res",
-            "module": module,
-            "file_path": file_path,
-            "source_set": source_set,
-            "line_number": None,
-            "resource_value": value,
-        })
-    return symbols
-
-
-# ──────────────────────────────────────────────
-# colors.xml 解析
-# ──────────────────────────────────────────────
-
-def _parse_colors(root_element, file_path: str, module: str,
-                  source_set: str) -> list[dict]:
-    symbols = []
-    for elem in root_element.iter("color"):
-        name = elem.get("name")
-        if not name:
-            continue
-        value = (elem.text or "").strip()
-        symbols.append({
-            "name": name,
-            "qualified_name": f"{module}.color.{name}",
-            "kind": "color_res",
-            "module": module,
-            "file_path": file_path,
-            "source_set": source_set,
-            "line_number": None,
-            "resource_value": value,
-        })
-    return symbols
-
-
-# ──────────────────────────────────────────────
-# dimens.xml 解析
-# ──────────────────────────────────────────────
-
-def _parse_dimens(root_element, file_path: str, module: str,
-                  source_set: str) -> list[dict]:
-    symbols = []
-    for elem in root_element.iter("dimen"):
-        name = elem.get("name")
-        if not name:
-            continue
-        value = (elem.text or "").strip()
-        symbols.append({
-            "name": name,
-            "qualified_name": f"{module}.dimen.{name}",
-            "kind": "dimen_res",
-            "module": module,
-            "file_path": file_path,
-            "source_set": source_set,
-            "line_number": None,
-            "resource_value": value,
-        })
-    return symbols
+    }]
 
 
 # ──────────────────────────────────────────────
@@ -169,6 +72,27 @@ def _parse_styles(root_element, file_path: str, module: str,
             "parent_class": parent,
         })
     return symbols
+
+
+# ──────────────────────────────────────────────
+# drawable 解析
+# ──────────────────────────────────────────────
+
+def _parse_drawable(root_element, file_path: str, module: str,
+                    source_set: str) -> list[dict]:
+    """提取 drawable 资源名称和根元素类型（shape/selector/vector/layer-list 等）。"""
+    name = Path(file_path).stem
+    tag = root_element.tag.split("}")[-1] if "}" in root_element.tag else root_element.tag
+    return [{
+        "name": name,
+        "qualified_name": f"{module}.drawable.{name}",
+        "kind": "drawable",
+        "module": module,
+        "file_path": file_path,
+        "source_set": source_set,
+        "line_number": 1,
+        "resource_value": tag,
+    }]
 
 
 # ──────────────────────────────────────────────
@@ -230,16 +154,11 @@ def _classify_xml(file_path: Path) -> str:
         return "manifest"
     if parent.startswith("layout"):
         return "layout"
-    if name == "strings":
-        return "strings"
-    if name == "colors":
-        return "colors"
-    if name == "dimens":
-        return "dimens"
+    if parent.startswith("drawable"):
+        return "drawable"
     if name == "styles":
         return "styles"
     if parent.startswith("values"):
-        # values/ 目录下的其他文件，按根元素判断
         return "values"
     return "unknown"
 
@@ -265,23 +184,13 @@ def parse_xml_file(
             return _parse_manifest(root_element, fp, module, source_set), None
         if xml_type == "layout":
             return _parse_layout(root_element, fp, module, source_set), None
-        if xml_type == "strings":
-            return _parse_strings(root_element, fp, module, source_set), None
-        if xml_type == "colors":
-            return _parse_colors(root_element, fp, module, source_set), None
-        if xml_type == "dimens":
-            return _parse_dimens(root_element, fp, module, source_set), None
+        if xml_type == "drawable":
+            return _parse_drawable(root_element, fp, module, source_set), None
         if xml_type == "styles":
             return _parse_styles(root_element, fp, module, source_set), None
         if xml_type == "values":
-            # 通用 values 文件：合并解析
-            syms = (
-                _parse_strings(root_element, fp, module, source_set)
-                + _parse_colors(root_element, fp, module, source_set)
-                + _parse_dimens(root_element, fp, module, source_set)
-                + _parse_styles(root_element, fp, module, source_set)
-            )
-            return syms, None
+            # 通用 values 文件：只解析 styles
+            return _parse_styles(root_element, fp, module, source_set), None
 
         return [], None   # unknown 类型，跳过
 

@@ -15,6 +15,7 @@ from src.parsers.kotlin_parser import parse_kotlin_file
 from src.parsers.java_parser import parse_java_file
 from src.parsers.xml_parser import parse_xml_file
 from src.parsers.gradle_parser import parse_gradle_file
+from src.utils.tokenize import split_identifier
 
 console = Console()
 
@@ -58,12 +59,12 @@ INSERT OR IGNORE INTO symbols
     (name, qualified_name, kind, module, file_path, source_set,
      line_number, signature, visibility, is_abstract, is_override,
      parent_class, interfaces, annotations, return_type, parameters,
-     resource_value, extra)
+     resource_value, extra, name_tokens)
 VALUES
     (:name, :qualified_name, :kind, :module, :file_path, :source_set,
      :line_number, :signature, :visibility, :is_abstract, :is_override,
      :parent_class, :interfaces, :annotations, :return_type, :parameters,
-     :resource_value, :extra)
+     :resource_value, :extra, :name_tokens)
 """
 
 _INSERT_DEP = """
@@ -90,14 +91,14 @@ ON CONFLICT(file_path) DO UPDATE SET
 """
 
 
-def _normalize_symbol(sym: dict) -> dict:
-    """确保 symbol 字典包含所有必要的默认字段。"""
+def _normalize_symbol(sym: dict, rel_path: str) -> dict:
+    """确保 symbol 字典包含所有必要的默认字段，并用相对路径覆盖 file_path。"""
     defaults: dict[str, Any] = {
         "name": "",
         "qualified_name": "",
         "kind": "unknown",
         "module": "",
-        "file_path": "",
+        "file_path": rel_path,
         "source_set": "impl",
         "line_number": None,
         "signature": None,
@@ -111,8 +112,14 @@ def _normalize_symbol(sym: dict) -> dict:
         "parameters": None,
         "resource_value": None,
         "extra": None,
+        "name_tokens": "",
     }
     defaults.update(sym)
+    # 始终用相对路径覆盖（parsers 写入的是绝对路径）
+    defaults["file_path"] = rel_path
+    # 确保 name_tokens 始终基于最新的 name 填充
+    if not defaults["name_tokens"] and defaults["name"]:
+        defaults["name_tokens"] = split_identifier(defaults["name"])
     return defaults
 
 
@@ -120,17 +127,18 @@ def _index_file(
     conn: sqlite3.Connection,
     sf: SourceFile,
     failures: list[tuple[str, str]],
+    project_root: Path,
 ) -> None:
     """在单个 transaction 内处理一个文件的删旧插新。"""
-    fp_str = str(sf.file_path)
+    rel_path = "/" + str(sf.file_path.relative_to(project_root))
     try:
         mtime = sf.file_path.stat().st_mtime
     except OSError:
         mtime = 0.0
 
     # 1. 清除该文件的旧符号和旧依赖
-    conn.execute("DELETE FROM symbols WHERE file_path = ?", (fp_str,))
-    conn.execute("DELETE FROM module_dependencies WHERE source_file = ?", (fp_str,))
+    conn.execute("DELETE FROM symbols WHERE file_path = ?", (rel_path,))
+    conn.execute("DELETE FROM module_dependencies WHERE source_file = ?", (rel_path,))
 
     # 2. 解析
     syms, deps, warning = _parse_file(sf)
@@ -139,19 +147,20 @@ def _index_file(
     parse_error = warning
 
     if warning:
-        failures.append((fp_str, warning))
+        failures.append((rel_path, warning))
 
     # 3. 批量插入 symbols
     if syms:
-        conn.executemany(_INSERT_SYMBOL, [_normalize_symbol(s) for s in syms])
+        conn.executemany(_INSERT_SYMBOL, [_normalize_symbol(s, rel_path) for s in syms])
 
-    # 4. 批量插入 module_dependencies
+    # 4. 批量插入 module_dependencies（source_file 也改为相对路径）
     if deps:
-        conn.executemany(_INSERT_DEP, deps)
+        rel_deps = [{**d, "source_file": rel_path} for d in deps]
+        conn.executemany(_INSERT_DEP, rel_deps)
 
     # 5. 更新 files 表
     conn.execute(_INSERT_FILE, {
-        "file_path": fp_str,
+        "file_path": rel_path,
         "module": sf.module,
         "file_type": sf.file_type,
         "source_set": sf.source_set,
@@ -200,7 +209,7 @@ class Indexer:
             def _flush(batch: list[SourceFile]) -> None:
                 with self.conn:
                     for sf in batch:
-                        _index_file(self.conn, sf, failures)
+                        _index_file(self.conn, sf, failures, project_root)
 
             for sf in source_files:
                 batch.append(sf)
@@ -228,7 +237,7 @@ class Indexer:
         ).fetchall()
         db_mtime: dict[str, float] = {r["file_path"]: r["last_modified"] for r in rows}
 
-        current_paths = {str(sf.file_path) for sf in source_files}
+        current_paths = {"/" + str(sf.file_path.relative_to(project_root)) for sf in source_files}
 
         # 1. 删除已消失的文件
         deleted = set(db_mtime.keys()) - current_paths
@@ -243,12 +252,12 @@ class Indexer:
         # 2. 找出新增 / 修改的文件
         to_index: list[SourceFile] = []
         for sf in source_files:
-            fp_str = str(sf.file_path)
+            rel_path = "/" + str(sf.file_path.relative_to(project_root))
             try:
                 current_mtime = sf.file_path.stat().st_mtime
             except OSError:
                 continue
-            known_mtime = db_mtime.get(fp_str, 0.0)
+            known_mtime = db_mtime.get(rel_path, 0.0)
             if current_mtime > known_mtime:
                 to_index.append(sf)
 
@@ -261,7 +270,7 @@ class Indexer:
 
         with self.conn:
             for sf in to_index:
-                _index_file(self.conn, sf, failures)
+                _index_file(self.conn, sf, failures, project_root)
 
         self._report(len(to_index), failures)
 

@@ -5,12 +5,9 @@ export type SymbolKind =
   | 'function'
   | 'property'
   | 'layout'
-  | 'view_id'
-  | 'string_res'
-  | 'color_res'
-  | 'dimen_res'
   | 'style'
   | 'manifest_component'
+  | 'drawable'
 
 export interface Symbol {
   id: number

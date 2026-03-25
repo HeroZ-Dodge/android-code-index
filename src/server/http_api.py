@@ -36,19 +36,33 @@ async def _global_error_handler(request, exc):
 
 
 # ──────────────────────────────────────────────
-# 搜索
+# 搜索（拆分为源码搜索 / 资源搜索）
 # ──────────────────────────────────────────────
 
-@app.get("/search")
-def search(
+@app.get("/search/code")
+def search_code(
     keyword: str,
     kind: str | None = None,
     module: str | None = None,
+    use_tokens: bool = True,
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> Any:
-    return _get_engine().search(keyword=keyword, kind=kind, module=module,
-                                limit=limit, offset=offset)
+    return _get_engine().search_code(keyword=keyword, kind=kind, module=module,
+                                     limit=limit, offset=offset, use_tokens=use_tokens)
+
+
+@app.get("/search/resource")
+def search_resource(
+    keyword: str,
+    kind: str | None = None,
+    module: str | None = None,
+    use_tokens: bool = True,
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    return _get_engine().search_resource(keyword=keyword, kind=kind, module=module,
+                                         limit=limit, offset=offset, use_tokens=use_tokens)
 
 
 # ──────────────────────────────────────────────
@@ -115,7 +129,6 @@ def find_interface(
 
 @app.get("/files/{file_path:path}/symbols")
 def get_file_symbols(file_path: str) -> Any:
-    # file_path 来自 URL，需要还原为绝对路径（调用方应以 /path/to/file 形式传入）
     return _get_engine().get_file_symbols(f"/{file_path}")
 
 
@@ -191,22 +204,9 @@ def get_class_api(
 def find_layout(
     name: str | None = None,
     module: str | None = None,
-    view_id: str | None = None,
     limit: int = Query(default=20, ge=1, le=200),
 ) -> Any:
-    return _get_engine().find_layout(name=name, module=module,
-                                     view_id=view_id, limit=limit)
-
-
-@app.get("/resources/strings")
-def find_string(
-    key: str | None = None,
-    value: str | None = None,
-    module: str | None = None,
-    limit: int = Query(default=20, ge=1, le=200),
-) -> Any:
-    return _get_engine().find_string(key=key, value=value,
-                                     module=module, limit=limit)
+    return _get_engine().find_layout(name=name, module=module, limit=limit)
 
 
 @app.get("/resources/styles")
@@ -218,26 +218,13 @@ def find_style(
     return _get_engine().find_style(name=name, module=module, limit=limit)
 
 
-@app.get("/resources/colors")
-def find_color(
+@app.get("/resources/drawables")
+def find_drawable(
     name: str | None = None,
-    value: str | None = None,
     module: str | None = None,
-    limit: int = Query(default=20, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=200),
 ) -> Any:
-    return _get_engine().find_color(name=name, value=value,
-                                    module=module, limit=limit)
-
-
-@app.get("/resources/dimens")
-def find_dimen(
-    name: str | None = None,
-    value: str | None = None,
-    module: str | None = None,
-    limit: int = Query(default=20, ge=1, le=200),
-) -> Any:
-    return _get_engine().find_dimen(name=name, value=value,
-                                    module=module, limit=limit)
+    return _get_engine().find_drawable(name=name, module=module, limit=limit)
 
 
 # ──────────────────────────────────────────────

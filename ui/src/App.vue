@@ -19,7 +19,8 @@ onUnmounted(() => {
 
 const navLinks = [
   { path: '/', label: '仪表板' },
-  { path: '/search', label: '全文搜索' },
+  { path: '/search/code', label: '源码搜索' },
+  { path: '/search/resource', label: '资源搜索' },
   { path: '/modules', label: '模块浏览' },
   { path: '/relationships', label: '关系图谱' },
   { path: '/resources', label: '资源浏览' },

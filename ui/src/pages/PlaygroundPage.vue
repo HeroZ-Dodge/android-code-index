@@ -6,10 +6,19 @@ const endpoints = [
   { label: 'GET /stats', path: '/stats', params: [] },
   { label: 'GET /stats/breakdown', path: '/stats/breakdown', params: [] },
   { label: 'GET /modules', path: '/modules', params: [] },
-  { label: 'GET /search', path: '/search', params: [
+  { label: 'GET /search/code', path: '/search/code', params: [
     { name: 'keyword', type: 'string', required: true },
     { name: 'kind', type: 'string', required: false },
     { name: 'module', type: 'string', required: false },
+    { name: 'use_tokens', type: 'boolean', required: false },
+    { name: 'limit', type: 'number', required: false },
+    { name: 'offset', type: 'number', required: false },
+  ]},
+  { label: 'GET /search/resource', path: '/search/resource', params: [
+    { name: 'keyword', type: 'string', required: true },
+    { name: 'kind', type: 'string', required: false },
+    { name: 'module', type: 'string', required: false },
+    { name: 'use_tokens', type: 'boolean', required: false },
     { name: 'limit', type: 'number', required: false },
     { name: 'offset', type: 'number', required: false },
   ]},
@@ -28,13 +37,13 @@ const endpoints = [
     { name: 'module', type: 'string', required: false },
     { name: 'limit', type: 'number', required: false },
   ]},
-  { label: 'GET /resources/colors', path: '/resources/colors', params: [
+  { label: 'GET /resources/drawables', path: '/resources/drawables', params: [
     { name: 'name', type: 'string', required: false },
     { name: 'module', type: 'string', required: false },
     { name: 'limit', type: 'number', required: false },
   ]},
-  { label: 'GET /resources/strings', path: '/resources/strings', params: [
-    { name: 'key', type: 'string', required: false },
+  { label: 'GET /resources/layouts', path: '/resources/layouts', params: [
+    { name: 'name', type: 'string', required: false },
     { name: 'module', type: 'string', required: false },
     { name: 'limit', type: 'number', required: false },
   ]},

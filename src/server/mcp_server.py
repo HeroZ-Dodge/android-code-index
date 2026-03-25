@@ -35,14 +35,31 @@ async def list_tools() -> list[types.Tool]:
     return [
         # 批次 1
         types.Tool(
-            name="search",
-            description="全文搜索所有符号（类、函数、资源等）。keyword 为搜索关键词，kind/module 可选过滤。",
+            name="search_code",
+            description="全文搜索源码符号（class/interface/object/function/property）。keyword 为搜索关键词，kind/module 可选过滤，use_tokens 控制是否启用驼峰分词匹配（默认 true）。",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "keyword": {"type": "string"},
                     "kind": {"type": "string"},
                     "module": {"type": "string"},
+                    "use_tokens": {"type": "boolean", "default": True},
+                    "limit": {"type": "integer", "default": 20},
+                    "offset": {"type": "integer", "default": 0},
+                },
+                "required": ["keyword"],
+            },
+        ),
+        types.Tool(
+            name="search_resource",
+            description="全文搜索资源符号（layout/style/manifest_component/drawable）。keyword 为搜索关键词，kind/module 可选过滤，use_tokens 控制是否启用分词匹配（默认 true）。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "module": {"type": "string"},
+                    "use_tokens": {"type": "boolean", "default": True},
                     "limit": {"type": "integer", "default": 20},
                     "offset": {"type": "integer", "default": 0},
                 },
@@ -170,27 +187,25 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="find_layout",
-            description="查找布局文件和 View ID。可按布局名称、模块、view_id 过滤。",
+            description="查找布局文件。可按布局名称、模块过滤。",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
                     "module": {"type": "string"},
-                    "view_id": {"type": "string"},
                     "limit": {"type": "integer", "default": 20},
                 },
             },
         ),
         types.Tool(
-            name="find_string",
-            description="查找字符串资源。key 按 name 匹配，value 按字符串内容模糊匹配。",
+            name="find_drawable",
+            description="查找 drawable 资源（shape/selector/vector/layer-list 等）。可按名称、模块过滤。",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "key": {"type": "string"},
-                    "value": {"type": "string"},
+                    "name": {"type": "string"},
                     "module": {"type": "string"},
-                    "limit": {"type": "integer", "default": 20},
+                    "limit": {"type": "integer", "default": 50},
                 },
             },
         ),
@@ -237,19 +252,6 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="find_color",
-            description="查找颜色资源（colors.xml）。可按名称或颜色值（如 #FF0000）过滤。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "value": {"type": "string"},
-                    "module": {"type": "string"},
-                    "limit": {"type": "integer", "default": 20},
-                },
-            },
-        ),
-        types.Tool(
             name="project_stats",
             description="返回当前数据库的整体统计信息：文件数、符号数、模块数、依赖数等。",
             inputSchema={
@@ -267,8 +269,10 @@ async def call_tool(
     engine = _get_engine()
     result: Any
 
-    if name == "search":
-        result = engine.search(**arguments)
+    if name == "search_code":
+        result = engine.search_code(**arguments)
+    elif name == "search_resource":
+        result = engine.search_resource(**arguments)
     elif name == "find_class":
         result = engine.find_class(**arguments)
     elif name == "find_function":
@@ -289,16 +293,14 @@ async def call_tool(
         result = engine.get_class_api(**arguments)
     elif name == "find_layout":
         result = engine.find_layout(**arguments)
-    elif name == "find_string":
-        result = engine.find_string(**arguments)
+    elif name == "find_drawable":
+        result = engine.find_drawable(**arguments)
     elif name == "find_manifest_component":
         result = engine.find_manifest_component(**arguments)
     elif name == "find_module_deps":
         result = engine.find_module_deps(**arguments)
     elif name == "find_style":
         result = engine.find_style(**arguments)
-    elif name == "find_color":
-        result = engine.find_color(**arguments)
     elif name == "project_stats":
         result = engine.project_stats()
     else:

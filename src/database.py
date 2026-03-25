@@ -3,6 +3,7 @@
 import sqlite3
 import time
 from pathlib import Path
+from typing import Callable
 
 # 当前代码期望的 schema 版本
 SCHEMA_VERSION = 1
@@ -47,12 +48,14 @@ CREATE TABLE IF NOT EXISTS symbols (
     return_type     TEXT,
     parameters      TEXT,
     resource_value  TEXT,
-    extra           TEXT
+    extra           TEXT,
+    name_tokens     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_name           ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind           ON symbols(kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_module         ON symbols(module);
 CREATE INDEX IF NOT EXISTS idx_symbols_file           ON symbols(file_path);
+CREATE INDEX IF NOT EXISTS idx_symbols_file_line      ON symbols(file_path, line_number);
 CREATE INDEX IF NOT EXISTS idx_symbols_parent         ON symbols(parent_class);
 CREATE INDEX IF NOT EXISTS idx_symbols_visibility     ON symbols(visibility);
 CREATE INDEX IF NOT EXISTS idx_symbols_return_type    ON symbols(return_type);
@@ -83,6 +86,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     qualified_name,
     annotations,
     module,
+    name_tokens,
     content='symbols',
     content_rowid='id',
     tokenize='unicode61'
@@ -91,24 +95,28 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 
 _CREATE_TRIGGERS = """
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
-    INSERT INTO symbols_fts(rowid, name, qualified_name, annotations, module)
+    INSERT INTO symbols_fts(rowid, name, qualified_name, annotations, module, name_tokens)
     VALUES (new.id, new.name, new.qualified_name,
-            COALESCE(new.annotations, ''), new.module);
+            COALESCE(new.annotations, ''), new.module,
+            COALESCE(new.name_tokens, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, annotations, module)
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, annotations, module, name_tokens)
     VALUES ('delete', old.id, old.name, old.qualified_name,
-            COALESCE(old.annotations, ''), old.module);
+            COALESCE(old.annotations, ''), old.module,
+            COALESCE(old.name_tokens, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, annotations, module)
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, annotations, module, name_tokens)
     VALUES ('delete', old.id, old.name, old.qualified_name,
-            COALESCE(old.annotations, ''), old.module);
-    INSERT INTO symbols_fts(rowid, name, qualified_name, annotations, module)
+            COALESCE(old.annotations, ''), old.module,
+            COALESCE(old.name_tokens, ''));
+    INSERT INTO symbols_fts(rowid, name, qualified_name, annotations, module, name_tokens)
     VALUES (new.id, new.name, new.qualified_name,
-            COALESCE(new.annotations, ''), new.module);
+            COALESCE(new.annotations, ''), new.module,
+            COALESCE(new.name_tokens, ''));
 END;
 """
 
@@ -125,7 +133,14 @@ CREATE TABLE IF NOT EXISTS schema_version (
 # 新增 schema 变更时在此追加
 # ──────────────────────────────────────────────
 _MIGRATIONS: dict[int, list[str]] = {
-    # 版本 1 为初始 schema，无需额外迁移 SQL
+    # 示例：
+    # 2: ["ALTER TABLE symbols ADD COLUMN foo TEXT"],
+}
+
+# 版本迁移后置钩子（需要 Python 逻辑的迁移步骤）
+_MIGRATION_HOOKS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    # 示例：
+    # 2: lambda conn: _some_backfill(conn),
 }
 
 
@@ -187,5 +202,9 @@ def init_db(db_path: Path | None = None) -> sqlite3.Connection:
             (target_version, time.time(), f"migration to v{target_version}"),
         )
         conn.commit()
+        # 执行需要 Python 逻辑的后置钩子（如 FTS 重建、数据回填）
+        hook = _MIGRATION_HOOKS.get(target_version)
+        if hook:
+            hook(conn)
 
     return conn

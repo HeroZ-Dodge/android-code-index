@@ -1,12 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { search as apiSearch } from '@/api/search'
+import { searchCode } from '@/api/search'
 import type { Symbol } from '@/types'
 
 export const useSearchStore = defineStore('search', () => {
   const keyword = ref('')
   const kindFilter = ref<string | null>(null)
   const moduleFilter = ref<string | null>(null)
+  const useTokens = ref(true)
   const results = ref<Symbol[]>([])
   const total = ref(0)
   const page = ref(1)
@@ -19,10 +20,11 @@ export const useSearchStore = defineStore('search', () => {
     loading.value = true
     error.value = null
     try {
-      const res = await apiSearch({
+      const res = await searchCode({
         keyword: keyword.value,
         kind: kindFilter.value || undefined,
         module: moduleFilter.value || undefined,
+        use_tokens: useTokens.value,
         limit: pageSize.value,
         offset: (page.value - 1) * pageSize.value,
       })
@@ -40,7 +42,7 @@ export const useSearchStore = defineStore('search', () => {
   }
 
   return {
-    keyword, kindFilter, moduleFilter,
+    keyword, kindFilter, moduleFilter, useTokens,
     results, total, page, pageSize,
     loading, error,
     doSearch, resetPage,

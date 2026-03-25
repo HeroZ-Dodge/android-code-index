@@ -7,11 +7,7 @@ import type { Symbol } from '@/types'
 const search = useSearchStore()
 const drawer = useDrawerStore()
 
-const kinds = [
-  'class', 'interface', 'object', 'function', 'property',
-  'layout', 'view_id', 'string_res', 'color_res', 'dimen_res',
-  'style', 'manifest_component',
-]
+const kinds = ['class', 'interface', 'object', 'function', 'property']
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -45,10 +41,10 @@ function onSizeChange(size: number) {
     <!-- 搜索框 -->
     <el-card shadow="never" style="margin-bottom: 16px">
       <el-row :gutter="12" align="middle">
-        <el-col :span="10">
+        <el-col :span="9">
           <el-input
             v-model="search.keyword"
-            placeholder="输入关键词搜索（支持驼峰、中文）"
+            placeholder="输入关键词搜索（支持驼峰分词）"
             clearable
             @input="onKeywordChange"
             @clear="onKeywordChange"
@@ -56,13 +52,21 @@ function onSizeChange(size: number) {
             <template #prefix><el-icon><Search /></el-icon></template>
           </el-input>
         </el-col>
-        <el-col :span="6">
+        <el-col :span="5">
           <el-select v-model="search.kindFilter" placeholder="全部类型" clearable @change="onFilterChange" style="width: 100%">
             <el-option v-for="k in kinds" :key="k" :label="k" :value="k" />
           </el-select>
         </el-col>
-        <el-col :span="8">
+        <el-col :span="6">
           <el-input v-model="search.moduleFilter" placeholder="模块过滤（如 :app）" clearable @change="onFilterChange" />
+        </el-col>
+        <el-col :span="4">
+          <el-switch
+            v-model="search.useTokens"
+            active-text="分词匹配"
+            inactive-text=""
+            @change="onFilterChange"
+          />
         </el-col>
       </el-row>
     </el-card>
