@@ -16,6 +16,12 @@ app = FastAPI(
 _engine: QueryEngine | None = None
 
 
+def set_engine(engine: QueryEngine) -> None:
+    """外部注入 QueryEngine（用于多项目支持）。"""
+    global _engine
+    _engine = engine
+
+
 def _get_engine() -> QueryEngine:
     global _engine
     if _engine is None:

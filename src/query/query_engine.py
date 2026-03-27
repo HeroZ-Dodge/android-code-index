@@ -19,7 +19,8 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 class QueryEngine:
     def __init__(self, db_path: Path | None = None) -> None:
-        self.conn = init_db(db_path or DB_PATH)
+        self.db_path = db_path or DB_PATH
+        self.conn = init_db(self.db_path)
 
     # ──────────────────────────────────────────────
     # 批次 1 (P0) 方法
@@ -297,21 +298,44 @@ class QueryEngine:
         ).fetchall()
         return {"total": total, "items": [_row_to_dict(r) for r in rows]}
 
+    @staticmethod
+    def _normalize_file_path(file_path: str) -> str:
+        """归一化 file_path：统一加 / 前缀。
+
+        DB 中存储的 file_path 以 / 开头（项目根目录下的相对路径），
+        调用方传入的路径可能带或不带开头斜杠，统一处理后再查询。
+        示例：
+          'compfeed/src/main/java/Foo.kt'  → '/compfeed/src/main/java/Foo.kt'
+          '/compfeed/src/main/java/Foo.kt' → '/compfeed/src/main/java/Foo.kt'（不变）
+        """
+        if not file_path.startswith("/"):
+            file_path = "/" + file_path
+        return file_path
+
     def get_file_symbols(self, file_path: str) -> list[dict]:
-        """返回指定文件中的所有符号。file_path 必须为绝对路径。"""
+        """返回指定文件中的所有符号，按行号排序。
+
+        file_path 为项目根目录下的相对路径，兼容有无开头 / 两种写法：
+          '/compfeed/src/main/java/com/example/Foo.kt'
+          'compfeed/src/main/java/com/example/Foo.kt'
+        路径可从其他接口返回的 file_path 字段直接获取。
+        """
         rows = self.conn.execute(
             "SELECT * FROM symbols WHERE file_path = ? ORDER BY line_number",
-            (file_path,),
+            (self._normalize_file_path(file_path),),
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
     def get_file_imports(self, file_path: str) -> list[str]:
         """返回指定文件的所有 import 全限定名列表。
-        file_path 为相对路径（如 /compfeed/src/main/java/...）。
+
+        file_path 为项目根目录下的相对路径，兼容有无开头 / 两种写法：
+          '/compfeed/src/main/java/com/example/Foo.kt'
+          'compfeed/src/main/java/com/example/Foo.kt'
         """
         rows = self.conn.execute(
             "SELECT import_fqn FROM file_imports WHERE file_path = ? ORDER BY import_fqn",
-            (file_path,),
+            (self._normalize_file_path(file_path),),
         ).fetchall()
         return [r["import_fqn"] for r in rows]
 

@@ -8,7 +8,7 @@ from typing import Any
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
-from src.config import DB_PATH
+from src.config import DB_PATH, db_path_from_project
 from src.database import init_db
 from src.file_scanner import scan_project, SourceFile
 from src.parsers.kotlin_parser import parse_kotlin_file
@@ -193,6 +193,16 @@ class Indexer:
     def __init__(self, db_path: Path | None = None) -> None:
         self.db_path = db_path or DB_PATH
         self.conn = init_db(self.db_path)
+
+    @classmethod
+    def for_project(cls, project_root: Path) -> "Indexer":
+        """根据项目路径自动推导 DB 路径并创建 Indexer。
+
+        DB 路径规则：~/.{project_name}/index.db
+        如 /Users/foo/xxx.android → ~/.xxx.android/index.db
+        """
+        db_path = db_path_from_project(project_root)
+        return cls(db_path=db_path)
 
     # ── 全量索引 ──────────────────────────────
 

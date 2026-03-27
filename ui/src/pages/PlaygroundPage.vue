@@ -62,10 +62,10 @@ const endpointGroups = [
         { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
       ]},
       { label: 'GET /files/{file_path}/symbols', path: '/files/{file_path}/symbols', params: [
-        { name: 'file_path', type: 'string', required: true, placeholder: '如 compfeed/src/main/java/com/netease/gl/compfeed/ad/AdDialogFrequencyLimitHelper.kt' },
+        { name: 'file_path', type: 'string', required: true, placeholder: '如 compfeed/src/main/java/com/xxx/gl/compfeed/ad/AdDialogFrequencyLimitHelper.kt' },
       ]},
       { label: 'GET /files/{file_path}/imports', path: '/files/{file_path}/imports', params: [
-        { name: 'file_path', type: 'string', required: true, placeholder: '如 compfeed/src/main/java/com/netease/gl/compfeed/ad/AdDialogFrequencyLimitHelper.kt' },
+        { name: 'file_path', type: 'string', required: true, placeholder: '如 compfeed/src/main/java/com/xxx/gl/compfeed/ad/AdDialogFrequencyLimitHelper.kt' },
       ]},
     ],
   },
