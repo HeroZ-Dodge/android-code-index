@@ -33,3 +33,6 @@ specs/
 
 # Root markdown docs
 /*.md
+
+# CodeMaker local config (keep local, not in remote)
+.claude/
