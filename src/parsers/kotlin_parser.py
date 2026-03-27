@@ -126,18 +126,20 @@ def _extract_annotations(node, src: bytes) -> str | None:
 # ──────────────────────────────────────────────
 
 def _extract_params(fn_node, src: bytes) -> str:
+    """提取函数/构造器参数类型列表，兼容 function_value_parameters 和 class_parameters。"""
     params_node = (fn_node.child_by_field_name("value_parameters")
                    or next((c for c in fn_node.children
                             if c.type in ("function_value_parameters",
-                                          "value_parameters")), None))
+                                          "value_parameters",
+                                          "class_parameters")), None))
     if not params_node:
         return ""
     types = []
     for c in params_node.children:
-        if c.type == "function_value_parameter":
+        if c.type in ("function_value_parameter", "class_parameter", "parameter"):
             type_node = (c.child_by_field_name("type")
                          or next((g for g in c.children
-                                  if g.type not in ("identifier", ":", ",",
+                                  if g.type not in ("identifier", ":", ",", "val", "var",
                                                     "parameter_modifiers")), None))
             if type_node:
                 types.append(_text(type_node, src))
@@ -200,6 +202,11 @@ def _parse_class_body(body_node, src: bytes, package: str,
                                   module, file_path, source_set)
             if sym:
                 symbols.append(sym)
+        elif child.type == "secondary_constructor":
+            sym = _parse_secondary_constructor(child, src, package, parent_qualified,
+                                               module, file_path, source_set)
+            if sym:
+                symbols.append(sym)
         elif child.type in ("class_declaration", "object_declaration",
                             "companion_object"):
             syms = _parse_class(child, src, package, parent_qualified,
@@ -210,6 +217,73 @@ def _parse_class_body(body_node, src: bytes, package: str,
         _process_node(child)
 
     return symbols
+
+
+# ──────────────────────────────────────────────
+# 解析构造方法
+# ──────────────────────────────────────────────
+
+def _parse_primary_constructor(node, src: bytes, class_name: str,
+                                parent_qualified: str, module: str,
+                                file_path: str, source_set: str) -> dict | None:
+    """解析 primary_constructor 节点（class_declaration 的直接子节点）。"""
+    params_str = _extract_params(node, src)
+    param_sig = f"({params_str})"
+    qualified_name = f"{parent_qualified}<init>{param_sig}" if parent_qualified else f"{class_name}<init>{param_sig}"
+
+    src_code = _text(node, src)
+
+    return {
+        "name": class_name,
+        "qualified_name": qualified_name,
+        "kind": "constructor",
+        "module": module,
+        "file_path": file_path,
+        "source_set": source_set,
+        "line_number": node.start_point[0] + 1,
+        "signature": f"constructor{param_sig}",
+        "visibility": _extract_visibility(node, src),
+        "is_abstract": 0,
+        "is_override": 0,
+        "parent_class": parent_qualified or None,
+        "annotations": _extract_annotations(node, src),
+        "return_type": None,
+        "parameters": params_str or None,
+        "src_code": src_code,
+    }
+
+
+def _parse_secondary_constructor(node, src: bytes, package: str,
+                                  parent_qualified: str, module: str,
+                                  file_path: str, source_set: str) -> dict | None:
+    """解析 secondary_constructor 节点（在 class_body 内）。"""
+    # 从 parent_qualified 取类名（末段）
+    class_name = parent_qualified.split(".")[-1] if parent_qualified else "unknown"
+
+    params_str = _extract_params(node, src)
+    param_sig = f"({params_str})"
+    qualified_name = f"{parent_qualified}<init>{param_sig}" if parent_qualified else f"{class_name}<init>{param_sig}"
+
+    src_code = _text(node, src)
+
+    return {
+        "name": class_name,
+        "qualified_name": qualified_name,
+        "kind": "constructor",
+        "module": module,
+        "file_path": file_path,
+        "source_set": source_set,
+        "line_number": node.start_point[0] + 1,
+        "signature": f"constructor{param_sig}",
+        "visibility": _extract_visibility(node, src),
+        "is_abstract": 0,
+        "is_override": 0,
+        "parent_class": parent_qualified or None,
+        "annotations": _extract_annotations(node, src),
+        "return_type": None,
+        "parameters": params_str or None,
+        "src_code": src_code,
+    }
 
 
 # ──────────────────────────────────────────────
@@ -254,6 +328,8 @@ def _parse_function(node, src: bytes, package: str, parent_qualified: str,
         for c in node.children
     )
 
+    src_code = _text(node, src)
+
     return {
         "name": name,
         "qualified_name": qualified_name,
@@ -270,6 +346,7 @@ def _parse_function(node, src: bytes, package: str, parent_qualified: str,
         "annotations": _extract_annotations(node, src),
         "return_type": return_type,
         "parameters": params_str or None,
+        "src_code": src_code,
     }
 
 
@@ -455,6 +532,16 @@ def _parse_class(node, src: bytes, package: str, parent_qualified: str,
 
     symbols = [sym]
 
+    # 解析 primary constructor（直接挂在 class_declaration 上，不在 class_body 内）
+    primary_ctor = next((c for c in node.children
+                         if c.type == "primary_constructor"), None)
+    if primary_ctor:
+        ctor = _parse_primary_constructor(
+            primary_ctor, src, name, qualified_name, module, file_path, source_set
+        )
+        if ctor:
+            symbols.append(ctor)
+
     # 递归解析类体成员
     # child_by_field_name may return None for some grammar versions; fall back to type search
     body = (node.child_by_field_name("class_body")
@@ -478,11 +565,12 @@ def parse_kotlin_file(
     file_path: Path,
     module: str,
     source_set: str,
-) -> tuple[list[dict[str, Any]], str | None]:
+) -> tuple[list[dict[str, Any]], list[str], str | None]:
     """
-    解析 Kotlin 源文件，返回 (symbols, warning)。
+    解析 Kotlin 源文件，返回 (symbols, import_fqns, warning)。
 
-    解析失败时返回 ([], error_message)，不抛异常。
+    import_fqns  → 该文件所有具名 import 的全限定名列表，写入 file_imports 表。
+    解析失败时返回 ([], [], error_message)，不抛异常。
     """
     try:
         src = file_path.read_bytes()
@@ -519,7 +607,7 @@ def parse_kotlin_file(
         for child in root.children:
             _process_top_level(child)
 
-        return symbols, None
+        return symbols, list(imports.values()), None
 
     except Exception as e:
-        return [], f"{type(e).__name__}: {e}"
+        return [], [], f"{type(e).__name__}: {e}"

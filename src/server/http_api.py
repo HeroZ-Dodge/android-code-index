@@ -78,8 +78,8 @@ def list_modules() -> Any:
 # 符号查询
 # ──────────────────────────────────────────────
 
-@app.get("/symbols/class")
-def find_class(
+@app.get("/symbols/search/class")
+def search_class(
     name: str | None = None,
     module: str | None = None,
     parent_class: str | None = None,
@@ -88,15 +88,15 @@ def find_class(
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> Any:
-    return _get_engine().find_class(
+    return _get_engine().search_class(
         name=name, module=module, parent_class=parent_class,
         annotation=annotation, source_set=source_set,
         limit=limit, offset=offset,
     )
 
 
-@app.get("/symbols/function")
-def find_function(
+@app.get("/symbols/search/function")
+def search_function(
     name: str | None = None,
     module: str | None = None,
     return_type: str | None = None,
@@ -106,22 +106,22 @@ def find_function(
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> Any:
-    return _get_engine().find_function(
+    return _get_engine().search_function(
         name=name, module=module, return_type=return_type,
         visibility=visibility, annotation=annotation, source_set=source_set,
         limit=limit, offset=offset,
     )
 
 
-@app.get("/symbols/interface")
-def find_interface(
+@app.get("/symbols/search/interface")
+def search_interface(
     name: str | None = None,
     module: str | None = None,
     source_set: str | None = None,
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> Any:
-    return _get_engine().find_interface(
+    return _get_engine().search_interface(
         name=name, module=module, source_set=source_set,
         limit=limit, offset=offset,
     )
@@ -130,6 +130,11 @@ def find_interface(
 @app.get("/files/{file_path:path}/symbols")
 def get_file_symbols(file_path: str) -> Any:
     return _get_engine().get_file_symbols(f"/{file_path}")
+
+
+@app.get("/files/{file_path:path}/imports")
+def get_file_imports(file_path: str) -> Any:
+    return _get_engine().get_file_imports(f"/{file_path}")
 
 
 # ──────────────────────────────────────────────
@@ -194,6 +199,24 @@ def get_class_api(
 ) -> Any:
     return _get_engine().get_class_api(class_name=class_name,
                                        include_private=include_private)
+
+
+@app.get("/classes/{class_name}/api/full")
+def get_class_api_full(
+    class_name: str,
+    include_private: bool = False,
+) -> Any:
+    return _get_engine().get_class_api_full(class_name=class_name,
+                                            include_private=include_private)
+
+
+@app.get("/symbols/{symbol_id}/source")
+def get_symbol_source(symbol_id: int) -> Any:
+    result = _get_engine().get_symbol_source(symbol_id)
+    if result is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Symbol not found or has no source code")
+    return result
 
 
 # ──────────────────────────────────────────────

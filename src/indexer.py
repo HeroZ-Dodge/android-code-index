@@ -24,10 +24,11 @@ console = Console()
 # 解析分发
 # ──────────────────────────────────────────────
 
-def _parse_file(sf: SourceFile) -> tuple[list[dict], list[dict], str | None]:
+def _parse_file(sf: SourceFile) -> tuple[list[dict], list[str], list[dict], str | None]:
     """
-    解析单个文件，返回 (symbols, dep_records, warning)。
+    解析单个文件，返回 (symbols, import_fqns, dep_records, warning)。
     symbols       → 写入 symbols 表
+    import_fqns   → 写入 file_imports 表
     dep_records   → 写入 module_dependencies 表
     """
     ft = sf.file_type
@@ -36,18 +37,18 @@ def _parse_file(sf: SourceFile) -> tuple[list[dict], list[dict], str | None]:
     source_set = sf.source_set
 
     if ft == "kotlin":
-        syms, warn = parse_kotlin_file(fp, module, source_set)
-        return syms, [], warn
+        syms, import_fqns, warn = parse_kotlin_file(fp, module, source_set)
+        return syms, import_fqns, [], warn
     if ft == "java":
-        syms, warn = parse_java_file(fp, module, source_set)
-        return syms, [], warn
+        syms, import_fqns, warn = parse_java_file(fp, module, source_set)
+        return syms, import_fqns, [], warn
     if ft == "xml":
         syms, warn = parse_xml_file(fp, module, source_set)
-        return syms, [], warn
+        return syms, [], [], warn
     if ft == "gradle":
         deps, warn = parse_gradle_file(fp, module)
-        return [], deps, warn
-    return [], [], None
+        return [], [], deps, warn
+    return [], [], [], None
 
 
 # ──────────────────────────────────────────────
@@ -59,12 +60,17 @@ INSERT OR IGNORE INTO symbols
     (name, qualified_name, kind, module, file_path, source_set,
      line_number, signature, visibility, is_abstract, is_override,
      parent_class, interfaces, annotations, return_type, parameters,
-     resource_value, extra, name_tokens)
+     resource_value, extra, name_tokens, src_code)
 VALUES
     (:name, :qualified_name, :kind, :module, :file_path, :source_set,
      :line_number, :signature, :visibility, :is_abstract, :is_override,
      :parent_class, :interfaces, :annotations, :return_type, :parameters,
-     :resource_value, :extra, :name_tokens)
+     :resource_value, :extra, :name_tokens, :src_code)
+"""
+
+_INSERT_FILE_IMPORT = """
+INSERT OR IGNORE INTO file_imports (file_path, import_fqn)
+VALUES (:file_path, :import_fqn)
 """
 
 _INSERT_DEP = """
@@ -113,6 +119,7 @@ def _normalize_symbol(sym: dict, rel_path: str) -> dict:
         "resource_value": None,
         "extra": None,
         "name_tokens": "",
+        "src_code": None,
     }
     defaults.update(sym)
     # 始终用相对路径覆盖（parsers 写入的是绝对路径）
@@ -136,12 +143,13 @@ def _index_file(
     except OSError:
         mtime = 0.0
 
-    # 1. 清除该文件的旧符号和旧依赖
+    # 1. 清除该文件的旧符号、旧依赖和旧 import
     conn.execute("DELETE FROM symbols WHERE file_path = ?", (rel_path,))
     conn.execute("DELETE FROM module_dependencies WHERE source_file = ?", (rel_path,))
+    conn.execute("DELETE FROM file_imports WHERE file_path = ?", (rel_path,))
 
     # 2. 解析
-    syms, deps, warning = _parse_file(sf)
+    syms, import_fqns, deps, warning = _parse_file(sf)
 
     parse_status = "ok" if warning is None else "error"
     parse_error = warning
@@ -153,7 +161,12 @@ def _index_file(
     if syms:
         conn.executemany(_INSERT_SYMBOL, [_normalize_symbol(s, rel_path) for s in syms])
 
-    # 4. 批量插入 module_dependencies（source_file 也改为相对路径）
+    # 4. 批量插入 file_imports
+    if import_fqns:
+        conn.executemany(_INSERT_FILE_IMPORT,
+                         [{"file_path": rel_path, "import_fqn": fqn} for fqn in import_fqns])
+
+    # 5. 批量插入 module_dependencies（source_file 也改为相对路径）
     if deps:
         rel_deps = [{**d, "source_file": rel_path} for d in deps]
         conn.executemany(_INSERT_DEP, rel_deps)
@@ -246,6 +259,7 @@ class Indexer:
                 for fp_str in deleted:
                     self.conn.execute("DELETE FROM symbols WHERE file_path = ?", (fp_str,))
                     self.conn.execute("DELETE FROM module_dependencies WHERE source_file = ?", (fp_str,))
+                    self.conn.execute("DELETE FROM file_imports WHERE file_path = ?", (fp_str,))
                     self.conn.execute("DELETE FROM files WHERE file_path = ?", (fp_str,))
             console.print(f"  删除失效文件: {len(deleted)} 个")
 

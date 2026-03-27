@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 # 当前代码期望的 schema 版本
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ──────────────────────────────────────────────
 # DDL 语句
@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     parameters      TEXT,
     resource_value  TEXT,
     extra           TEXT,
-    name_tokens     TEXT NOT NULL DEFAULT ''
+    name_tokens     TEXT NOT NULL DEFAULT '',
+    src_code        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_name           ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind           ON symbols(kind);
@@ -63,6 +64,16 @@ CREATE INDEX IF NOT EXISTS idx_symbols_resource_value ON symbols(resource_value)
 CREATE INDEX IF NOT EXISTS idx_symbols_kind_id        ON symbols(kind, id);
 CREATE INDEX IF NOT EXISTS idx_symbols_module_kind    ON symbols(module, kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_module_kind_ss ON symbols(module, kind, source_set);
+"""
+
+_CREATE_FILE_IMPORTS = """
+CREATE TABLE IF NOT EXISTS file_imports (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path   TEXT NOT NULL,
+    import_fqn  TEXT NOT NULL,
+    UNIQUE(file_path, import_fqn)
+);
+CREATE INDEX IF NOT EXISTS idx_file_imports_file ON file_imports(file_path);
 """
 
 _CREATE_MODULE_DEPS = """
@@ -169,8 +180,8 @@ def init_db(db_path: Path | None = None) -> sqlite3.Connection:
     conn = get_connection(path)
 
     # 1. 创建基础表结构（IF NOT EXISTS 保证幂等）
-    for ddl in [_CREATE_FILES, _CREATE_SYMBOLS, _CREATE_MODULE_DEPS,
-                _CREATE_SCHEMA_VERSION]:
+    for ddl in [_CREATE_FILES, _CREATE_SYMBOLS, _CREATE_FILE_IMPORTS,
+                _CREATE_MODULE_DEPS, _CREATE_SCHEMA_VERSION]:
         conn.executescript(ddl)
 
     # 2. FTS5 虚拟表和触发器

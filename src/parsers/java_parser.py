@@ -156,6 +156,9 @@ def _parse_method(node, src: bytes, package: str, parent_qualified: str,
     is_abstract = int(_has_modifier(node, src, "abstract"))
     is_override = 0  # Java 中 @Override 是注解，不是修饰符，此处简化
 
+    # 方法体原始源码（含注释、缩进）
+    src_code = _text(node, src)
+
     return {
         "name": name,
         "qualified_name": qualified_name,
@@ -172,6 +175,48 @@ def _parse_method(node, src: bytes, package: str, parent_qualified: str,
         "annotations": _extract_annotations(node, src),
         "return_type": return_type,
         "parameters": params_str or None,
+        "src_code": src_code,
+    }
+
+
+# ──────────────────────────────────────────────
+# 解析构造方法
+# ──────────────────────────────────────────────
+
+def _parse_constructor(node, src: bytes, package: str, parent_qualified: str,
+                       module: str, file_path: str, source_set: str) -> dict | None:
+    """解析 constructor_declaration，结构与 method_declaration 类似。"""
+    name_node = node.child_by_field_name("name")
+    if not name_node:
+        return None
+    name = _text(name_node, src)
+
+    params_str = _extract_params(node, src)
+
+    prefix = parent_qualified or package
+    param_sig = f"({params_str})"
+    # 构造方法无返回类型，qualified_name 用 <init> 区分同名重载
+    qualified_name = f"{prefix}.{name}<init>{param_sig}" if prefix else f"{name}<init>{param_sig}"
+
+    src_code = _text(node, src)
+
+    return {
+        "name": name,
+        "qualified_name": qualified_name,
+        "kind": "constructor",
+        "module": module,
+        "file_path": file_path,
+        "source_set": source_set,
+        "line_number": node.start_point[0] + 1,
+        "signature": f"{name}{param_sig}",
+        "visibility": _extract_visibility(node, src),
+        "is_abstract": 0,
+        "is_override": 0,
+        "parent_class": parent_qualified or None,
+        "annotations": _extract_annotations(node, src),
+        "return_type": None,
+        "parameters": params_str or None,
+        "src_code": src_code,
     }
 
 
@@ -288,6 +333,11 @@ def _parse_class(node, src: bytes, package: str, parent_qualified: str,
                                   module, file_path, source_set)
                 if m:
                     symbols.append(m)
+            elif child.type == "constructor_declaration":
+                c = _parse_constructor(child, src, package, qualified_name,
+                                       module, file_path, source_set)
+                if c:
+                    symbols.append(c)
             elif child.type == "field_declaration":
                 symbols.extend(
                     _parse_field(child, src, package, qualified_name,
@@ -311,11 +361,12 @@ def parse_java_file(
     file_path: Path,
     module: str,
     source_set: str,
-) -> tuple[list[dict[str, Any]], str | None]:
+) -> tuple[list[dict[str, Any]], list[str], str | None]:
     """
-    解析 Java 源文件，返回 (symbols, warning)。
+    解析 Java 源文件，返回 (symbols, import_fqns, warning)。
 
-    解析失败时返回 ([], error_message)，不抛异常。
+    import_fqns  → 该文件所有具名 import 的全限定名列表，写入 file_imports 表。
+    解析失败时返回 ([], [], error_message)，不抛异常。
     """
     try:
         src = file_path.read_bytes()
@@ -335,7 +386,7 @@ def parse_java_file(
                                  module, str(file_path), source_set, imports)
                 )
 
-        return symbols, None
+        return symbols, list(imports.values()), None
 
     except Exception as e:
-        return [], f"{type(e).__name__}: {e}"
+        return [], [], f"{type(e).__name__}: {e}"

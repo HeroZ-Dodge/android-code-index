@@ -3,6 +3,7 @@ export type SymbolKind =
   | 'interface'
   | 'object'
   | 'function'
+  | 'constructor'
   | 'property'
   | 'layout'
   | 'style'
@@ -29,6 +30,7 @@ export interface Symbol {
   parameters: string | null
   resource_value: string | null
   extra: string | null
+  src_code: string | null
 }
 
 export interface SearchResult {

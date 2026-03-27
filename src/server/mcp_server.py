@@ -1,4 +1,4 @@
-"""MCP Server：通过 stdio transport 暴露 17 个查询工具，供 Claude Desktop 调用。"""
+"""MCP Server：通过 stdio transport 暴露 20 个查询工具，供 Claude Desktop 调用。"""
 
 import json
 from typing import Any
@@ -67,7 +67,7 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="find_class",
+            name="search_class",
             description="查找类、data class、sealed class、object、enum。支持按名称、模块、父类、注解过滤。",
             inputSchema={
                 "type": "object",
@@ -83,7 +83,7 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="find_function",
+            name="search_function",
             description="查找函数/方法。支持按名称、模块、返回类型、可见性、注解过滤。",
             inputSchema={
                 "type": "object",
@@ -100,7 +100,7 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="find_interface",
+            name="search_interface",
             description="查找接口定义。支持按名称、模块过滤。",
             inputSchema={
                 "type": "object",
@@ -125,6 +125,17 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="get_file_imports",
+            description="返回指定文件的所有 import 全限定名列表，方便 AI 理解该文件的依赖上下文。file_path 必须是绝对路径。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string"},
+                },
+                "required": ["file_path"],
+            },
+        ),
+        types.Tool(
             name="get_module_overview",
             description="返回模块的统计概览：SDK 类数、impl 类数、接口数、函数数、文件数。",
             inputSchema={
@@ -138,7 +149,12 @@ async def list_tools() -> list[types.Tool]:
         # 批次 2
         types.Tool(
             name="get_inheritance",
-            description="返回指定类从自身到根类的继承链。遇到未知父类时自动终止。",
+            description=(
+                "返回指定类从自身到根类的继承链。遇到未知父类时自动终止。"
+                "class_name 优先匹配 qualified_name（精确唯一），"
+                "其次匹配 name（若有多个同名类则返回 {error: ambiguous, candidates:[...]}，"
+                "此时应从 candidates 中取 qualified_name 重新调用）。"
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -149,7 +165,11 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_subclasses",
-            description="返回指定类的直接子类或所有子类。direct_only=true 时只返回直接子类。",
+            description=(
+                "返回指定类的直接子类或所有子类。direct_only=true 时只返回直接子类。"
+                "class_name 优先匹配 qualified_name，其次匹配 name；"
+                "name 有歧义时返回 {error: ambiguous, candidates:[...]}。"
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -162,7 +182,11 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_implementations",
-            description="返回实现了指定接口的所有类。",
+            description=(
+                "返回实现了指定接口的所有类。"
+                "interface_name 优先匹配 qualified_name，其次匹配 name；"
+                "name 有歧义时返回 {error: ambiguous, candidates:[...]}。"
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -175,7 +199,15 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_class_api",
-            description="返回类的所有成员（方法、属性）。include_private=true 时包含私有成员。",
+            description=(
+                "返回类的成员摘要列表（精简版，不含源码）。每个成员只包含 id、name、kind、"
+                "visibility、return_type、parameters、signature、annotations、line_number 等核心字段，"
+                "过滤掉 null 值。token 消耗约为完整版的 1/10。"
+                "class_name 优先匹配 qualified_name，其次匹配 name；"
+                "name 有歧义时返回 {error: ambiguous, candidates:[...]}，应取 qualified_name 重新调用。"
+                "需要查看某个方法的源码，请用 get_symbol_source(id)；"
+                "需要完整数据请用 get_class_api_full。"
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -183,6 +215,40 @@ async def list_tools() -> list[types.Tool]:
                     "include_private": {"type": "boolean", "default": False},
                 },
                 "required": ["class_name"],
+            },
+        ),
+        types.Tool(
+            name="get_class_api_full",
+            description=(
+                "返回类的完整成员列表（含每个方法/构造器的 src_code）以及该文件的所有 import。"
+                "token 消耗较高，适合需要深入分析整个类实现的场景。"
+                "class_name 优先匹配 qualified_name，其次匹配 name；"
+                "name 有歧义时返回 {error: ambiguous, candidates:[...]}。"
+                "返回格式：{members: [...], file_imports: [...]}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "class_name": {"type": "string"},
+                    "include_private": {"type": "boolean", "default": False},
+                },
+                "required": ["class_name"],
+            },
+        ),
+        types.Tool(
+            name="get_symbol_source",
+            description=(
+                "按符号 id 返回单个方法/构造器的完整源码。"
+                "先用 get_class_api 获取成员列表拿到 id，再用此接口按需获取源码，"
+                "是节省 token 的推荐用法。"
+                "返回格式：{id, name, kind, file_path, line_number, src_code}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol_id": {"type": "integer"},
+                },
+                "required": ["symbol_id"],
             },
         ),
         types.Tool(
@@ -273,14 +339,16 @@ async def call_tool(
         result = engine.search_code(**arguments)
     elif name == "search_resource":
         result = engine.search_resource(**arguments)
-    elif name == "find_class":
-        result = engine.find_class(**arguments)
-    elif name == "find_function":
-        result = engine.find_function(**arguments)
-    elif name == "find_interface":
-        result = engine.find_interface(**arguments)
+    elif name == "search_class":
+        result = engine.search_class(**arguments)
+    elif name == "search_function":
+        result = engine.search_function(**arguments)
+    elif name == "search_interface":
+        result = engine.search_interface(**arguments)
     elif name == "get_file_symbols":
         result = engine.get_file_symbols(**arguments)
+    elif name == "get_file_imports":
+        result = engine.get_file_imports(**arguments)
     elif name == "get_module_overview":
         result = engine.get_module_overview(**arguments)
     elif name == "get_inheritance":
@@ -291,6 +359,10 @@ async def call_tool(
         result = engine.get_implementations(**arguments)
     elif name == "get_class_api":
         result = engine.get_class_api(**arguments)
+    elif name == "get_class_api_full":
+        result = engine.get_class_api_full(**arguments)
+    elif name == "get_symbol_source":
+        result = engine.get_symbol_source(**arguments)
     elif name == "find_layout":
         result = engine.find_layout(**arguments)
     elif name == "find_drawable":

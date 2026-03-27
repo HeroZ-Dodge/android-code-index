@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import client from '@/api/client'
 
-// 按功能分组，与 http_api.py 中所有 20 个端点一一对应
+// 按功能分组，与 http_api.py 中所有端点一一对应
 const endpointGroups = [
   {
     group: '统计',
@@ -35,7 +35,7 @@ const endpointGroups = [
   {
     group: '符号查询',
     items: [
-      { label: 'GET /symbols/class', path: '/symbols/class', params: [
+      { label: 'GET /symbols/search/class', path: '/symbols/search/class', params: [
         { name: 'name', type: 'string', required: false, placeholder: '如 FeedFragment' },
         { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
         { name: 'parent_class', type: 'string', required: false, placeholder: '如 BaseFragment' },
@@ -44,7 +44,7 @@ const endpointGroups = [
         { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
         { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
       ]},
-      { label: 'GET /symbols/function', path: '/symbols/function', params: [
+      { label: 'GET /symbols/search/function', path: '/symbols/search/function', params: [
         { name: 'name', type: 'string', required: false, placeholder: '如 onCreate' },
         { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
         { name: 'return_type', type: 'string', required: false, placeholder: '如 Boolean' },
@@ -54,7 +54,7 @@ const endpointGroups = [
         { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
         { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
       ]},
-      { label: 'GET /symbols/interface', path: '/symbols/interface', params: [
+      { label: 'GET /symbols/search/interface', path: '/symbols/search/interface', params: [
         { name: 'name', type: 'string', required: false, placeholder: '如 IFeedService' },
         { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
         { name: 'source_set', type: 'string', required: false, placeholder: 'sdk | impl' },
@@ -62,6 +62,9 @@ const endpointGroups = [
         { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
       ]},
       { label: 'GET /files/{file_path}/symbols', path: '/files/{file_path}/symbols', params: [
+        { name: 'file_path', type: 'string', required: true, placeholder: '如 compfeed/src/main/java/com/netease/gl/compfeed/ad/AdDialogFrequencyLimitHelper.kt' },
+      ]},
+      { label: 'GET /files/{file_path}/imports', path: '/files/{file_path}/imports', params: [
         { name: 'file_path', type: 'string', required: true, placeholder: '如 compfeed/src/main/java/com/netease/gl/compfeed/ad/AdDialogFrequencyLimitHelper.kt' },
       ]},
     ],
@@ -85,6 +88,13 @@ const endpointGroups = [
       { label: 'GET /classes/{class_name}/api', path: '/classes/{class_name}/api', params: [
         { name: 'class_name', type: 'string', required: true, placeholder: '如 FeedFragment' },
         { name: 'include_private', type: 'string', required: false, placeholder: 'true | false，默认 false' },
+      ]},
+      { label: 'GET /classes/{class_name}/api/full', path: '/classes/{class_name}/api/full', params: [
+        { name: 'class_name', type: 'string', required: true, placeholder: '如 FeedFragment' },
+        { name: 'include_private', type: 'string', required: false, placeholder: 'true | false，默认 false' },
+      ]},
+      { label: 'GET /symbols/{symbol_id}/source', path: '/symbols/{symbol_id}/source', params: [
+        { name: 'symbol_id', type: 'string', required: true, placeholder: '如 145089' },
       ]},
     ],
   },
@@ -145,6 +155,28 @@ const loading = ref(false)
 const responseTime = ref<number | null>(null)
 const statusCode = ref<number | null>(null)
 const responseBody = ref('')
+const parsedItems = ref<any[]>([])
+const expandedSrcCode = ref<Set<number>>(new Set())
+
+// 检测响应是否为含 src_code 的符号列表
+function extractItems(data: any): any[] {
+  if (Array.isArray(data)) return data
+  if (data && Array.isArray(data.items)) return data.items
+  if (data && Array.isArray(data.members)) return data.members
+  return []
+}
+
+function hasSrcCode(items: any[]): boolean {
+  return items.some(item => item && typeof item.src_code === 'string' && item.src_code.length > 0)
+}
+
+function toggleSrcCode(idx: number) {
+  if (expandedSrcCode.value.has(idx)) {
+    expandedSrcCode.value.delete(idx)
+  } else {
+    expandedSrcCode.value.add(idx)
+  }
+}
 
 async function send() {
   loading.value = true
@@ -170,9 +202,13 @@ async function send() {
     const res = await client.get(path, { params: queryParams })
     statusCode.value = res.status
     responseBody.value = JSON.stringify(res.data, null, 2)
+    parsedItems.value = extractItems(res.data)
+    expandedSrcCode.value = new Set()
   } catch (e: any) {
     statusCode.value = e.response?.status ?? 0
     responseBody.value = JSON.stringify(e.response?.data ?? { error: e.message }, null, 2)
+    parsedItems.value = []
+    expandedSrcCode.value = new Set()
   } finally {
     responseTime.value = Date.now() - t0
     loading.value = false
@@ -184,6 +220,12 @@ function onEndpointChange() {
   responseBody.value = ''
   statusCode.value = null
   responseTime.value = null
+  parsedItems.value = []
+  expandedSrcCode.value = new Set()
+}
+
+function copyToClipboard(text: string) {
+  window.navigator.clipboard.writeText(text)
 }
 </script>
 
@@ -252,8 +294,57 @@ function onEndpointChange() {
           <span v-if="responseTime !== null">耗时：{{ responseTime }} ms</span>
         </div>
         <div v-if="responseBody">
-          <div style="font-weight: 600; margin-bottom: 8px">响应</div>
-          <pre style="background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 8px; font-size: 12px; overflow: auto; max-height: 500px; white-space: pre-wrap; word-break: break-all">{{ responseBody }}</pre>
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px">
+            <span style="font-weight: 600">响应</span>
+            <el-button size="small" @click="copyToClipboard(responseBody)">复制</el-button>
+          </div>
+
+          <!-- src_code 增强视图：当结果含有 src_code 时显示符号卡片 -->
+          <template v-if="parsedItems.length > 0 && hasSrcCode(parsedItems)">
+            <div
+              v-for="(item, idx) in parsedItems"
+              :key="idx"
+              style="border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 8px; overflow: hidden"
+            >
+              <!-- 符号头部 -->
+              <div
+                style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: #f9fafb; cursor: pointer"
+                @click="item.src_code ? toggleSrcCode(idx) : null"
+              >
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                  <el-tag size="small" type="info">{{ item.kind }}</el-tag>
+                  <span style="font-weight: 600; font-size: 13px">{{ item.name }}</span>
+                  <span v-if="item.module" style="font-size: 11px; color: #6b7280">{{ item.module }}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0">
+                  <span v-if="item.return_type" style="font-size: 11px; color: #6b7280">→ {{ item.return_type }}</span>
+                  <el-button
+                    v-if="item.src_code"
+                    size="small"
+                    text
+                    @click.stop="toggleSrcCode(idx)"
+                  >
+                    {{ expandedSrcCode.has(idx) ? '收起源码' : '查看源码' }}
+                  </el-button>
+                </div>
+              </div>
+              <!-- 源码展开区 -->
+              <div v-if="item.src_code && expandedSrcCode.has(idx)">
+                <pre style="margin: 0; padding: 12px 16px; background: #1e1e1e; color: #d4d4d4; font-size: 12px; overflow: auto; max-height: 400px; white-space: pre; word-break: normal">{{ item.src_code }}</pre>
+              </div>
+            </div>
+          </template>
+
+          <!-- 原始 JSON 视图 -->
+          <div>
+            <div
+              style="font-size: 12px; color: #6b7280; margin-bottom: 4px; display: flex; align-items: center; gap: 8px"
+              v-if="parsedItems.length > 0 && hasSrcCode(parsedItems)"
+            >
+              原始 JSON
+            </div>
+            <pre style="background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 8px; font-size: 12px; overflow: auto; max-height: 400px; white-space: pre-wrap; word-break: break-all">{{ responseBody }}</pre>
+          </div>
         </div>
         <div v-else style="color: #9ca3af; text-align: center; padding: 48px">
           选择端点并点击"发送请求"

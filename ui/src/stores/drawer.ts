@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { getInheritance, getSubclasses, getImplementations, getClassApi } from '@/api/symbols'
+import { getInheritance, getSubclasses, getImplementations, getClassApi, getSymbolSource } from '@/api/symbols'
 import type { Symbol } from '@/types'
 
 export const useDrawerStore = defineStore('drawer', () => {
@@ -12,6 +12,10 @@ export const useDrawerStore = defineStore('drawer', () => {
   const members = ref<Symbol[]>([])
   const loading = ref(false)
 
+  // 按需加载的成员源码缓存：member.id -> src_code
+  const memberSrcCache = ref<Record<number, string | null>>({})
+  const memberSrcLoading = ref<Set<number>>(new Set())
+
   async function open(s: Symbol) {
     symbol.value = s
     visible.value = true
@@ -19,28 +23,49 @@ export const useDrawerStore = defineStore('drawer', () => {
     subclasses.value = []
     implementations.value = []
     members.value = []
+    memberSrcCache.value = {}
+    memberSrcLoading.value = new Set()
     loading.value = true
 
     const tasks: Promise<void>[] = []
 
     if (s.kind === 'class' || s.kind === 'object') {
       tasks.push(
-        getInheritance(s.name).then((v: string[]) => { inheritanceChain.value = v }).catch(() => {})
+        getInheritance(s.qualified_name).then((v) => { inheritanceChain.value = v }).catch(() => {})
       )
       tasks.push(
-        getSubclasses(s.name).then((v: Symbol[]) => { subclasses.value = v }).catch(() => {})
+        getSubclasses(s.qualified_name).then((v) => { subclasses.value = v }).catch(() => {})
       )
       tasks.push(
-        getClassApi(s.name).then((v: Symbol[]) => { members.value = v }).catch(() => {})
+        // 精简版：快速加载成员摘要，传 qualified_name 避免同名歧义
+        getClassApi(s.qualified_name).then((v) => { members.value = v }).catch(() => {})
       )
     } else if (s.kind === 'interface') {
       tasks.push(
-        getImplementations(s.name).then((v: Symbol[]) => { implementations.value = v }).catch(() => {})
+        getImplementations(s.qualified_name).then((v) => { implementations.value = v }).catch(() => {})
       )
     }
 
     await Promise.all(tasks)
     loading.value = false
+  }
+
+  // 按需加载单个成员的源码
+  async function loadMemberSource(memberId: number) {
+    if (memberId in memberSrcCache.value) return
+    if (memberSrcLoading.value.has(memberId)) return
+
+    memberSrcLoading.value = new Set([...memberSrcLoading.value, memberId])
+    try {
+      const result = await getSymbolSource(memberId)
+      memberSrcCache.value = { ...memberSrcCache.value, [memberId]: result.src_code }
+    } catch {
+      memberSrcCache.value = { ...memberSrcCache.value, [memberId]: null }
+    } finally {
+      const next = new Set(memberSrcLoading.value)
+      next.delete(memberId)
+      memberSrcLoading.value = next
+    }
   }
 
   function close() {
@@ -51,7 +76,8 @@ export const useDrawerStore = defineStore('drawer', () => {
   return {
     visible, symbol,
     inheritanceChain, subclasses, implementations, members,
+    memberSrcCache, memberSrcLoading,
     loading,
-    open, close,
+    open, close, loadMemberSource,
   }
 })

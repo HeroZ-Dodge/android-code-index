@@ -166,7 +166,7 @@ class QueryEngine:
         return self.search(keyword, kinds=effective_kinds, module=module,
                            limit=limit, offset=offset, use_tokens=use_tokens)
 
-    def find_class(
+    def search_class(
         self,
         name: str | None = None,
         module: str | None = None,
@@ -211,7 +211,7 @@ class QueryEngine:
         ).fetchall()
         return {"total": total, "items": [_row_to_dict(r) for r in rows]}
 
-    def find_function(
+    def search_function(
         self,
         name: str | None = None,
         module: str | None = None,
@@ -260,7 +260,7 @@ class QueryEngine:
         ).fetchall()
         return {"total": total, "items": [_row_to_dict(r) for r in rows]}
 
-    def find_interface(
+    def search_interface(
         self,
         name: str | None = None,
         module: str | None = None,
@@ -305,6 +305,16 @@ class QueryEngine:
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    def get_file_imports(self, file_path: str) -> list[str]:
+        """返回指定文件的所有 import 全限定名列表。
+        file_path 为相对路径（如 /compfeed/src/main/java/...）。
+        """
+        rows = self.conn.execute(
+            "SELECT import_fqn FROM file_imports WHERE file_path = ? ORDER BY import_fqn",
+            (file_path,),
+        ).fetchall()
+        return [r["import_fqn"] for r in rows]
+
     def get_module_overview(self, module: str) -> dict[str, Any]:
         """返回模块统计：sdk/impl 类数、接口数、函数数、文件数。
 
@@ -341,48 +351,83 @@ class QueryEngine:
     # 批次 2 (P1) 方法
     # ──────────────────────────────────────────────
 
-    def get_inheritance(self, class_name: str) -> list[str]:
-        """
-        返回 class_name 到根类的继承链（含自身）。
+    # 类查询时的歧义错误标记
+    _AMBIGUOUS = "__AMBIGUOUS__"
 
-        class_name 可以是简单名或全限定名。
-        修复后 parent_class 存储全限定名，遍历时直接用全限定名查询；
-        同时也支持简单名输入（取 qualified_name 末段匹配）。
+    def _resolve_class(
+        self,
+        class_name: str,
+        kinds: tuple[str, ...] = ("class", "interface", "object"),
+    ) -> dict[str, Any] | None:
+        """将 class_name 解析为唯一一条 symbols 行。
+
+        解析规则（优先级从高到低）：
+          1. 精确匹配 qualified_name → 直接返回，无歧义
+          2. 精确匹配 name → 若唯一则返回；若多个则返回
+             {"__ambiguous__": True, "candidates": [...]}
+
+        返回值：
+          - 找到唯一结果：返回该行 dict（含 id / qualified_name / parent_class / file_path 等）
+          - 歧义（name 匹配多个）：返回 {"__ambiguous__": True, "candidates": [简要列表]}
+          - 找不到：返回 None
+        """
+        kind_placeholders = ",".join("?" * len(kinds))
+        kind_params = list(kinds)
+
+        # 1. 精确匹配 qualified_name
+        row = self.conn.execute(
+            f"SELECT * FROM symbols WHERE qualified_name = ? AND kind IN ({kind_placeholders}) LIMIT 1",
+            [class_name] + kind_params,
+        ).fetchone()
+        if row:
+            return _row_to_dict(row)
+
+        # 2. 精确匹配 name
+        rows = self.conn.execute(
+            f"SELECT * FROM symbols WHERE name = ? AND kind IN ({kind_placeholders})",
+            [class_name] + kind_params,
+        ).fetchall()
+        if len(rows) == 1:
+            return _row_to_dict(rows[0])
+        if len(rows) > 1:
+            return {
+                "__ambiguous__": True,
+                "candidates": [
+                    {"id": r["id"], "qualified_name": r["qualified_name"], "module": r["module"]}
+                    for r in rows
+                ],
+            }
+        return None
+
+    def get_inheritance(self, class_name: str) -> list[str] | dict:
+        """返回 class_name 到根类的继承链（含自身）。
+
+        class_name 优先匹配 qualified_name，其次匹配 name（唯一时）。
+        若 name 有歧义，返回 {"error": "ambiguous", "candidates": [...]}。
         遇到未知父类时终止，不抛异常。
         """
-        # 先尝试用输入解析出起始类的 qualified_name
-        def _lookup_class(name: str) -> tuple[str | None, str | None]:
-            """返回 (qualified_name, parent_class)，查不到返回 (None, None)。"""
-            # 优先精确匹配 qualified_name，再回退到 name 匹配
-            row = self.conn.execute(
-                "SELECT qualified_name, parent_class FROM symbols "
-                "WHERE qualified_name = ? AND kind IN ('class','interface') LIMIT 1",
-                (name,),
-            ).fetchone()
-            if not row:
-                simple = name.split(".")[-1]
-                row = self.conn.execute(
-                    "SELECT qualified_name, parent_class FROM symbols "
-                    "WHERE name = ? AND kind IN ('class','interface') LIMIT 1",
-                    (simple,),
-                ).fetchone()
-            if row:
-                return row["qualified_name"], row["parent_class"]
-            return None, None
+        resolved = self._resolve_class(class_name, kinds=("class", "interface", "object"))
+        if resolved is None:
+            return []
+        if resolved.get("__ambiguous__"):
+            return {"error": "ambiguous", "candidates": resolved["candidates"]}
 
-        qname, parent = _lookup_class(class_name)
-        start = qname or class_name
-        chain = [start]
-        visited: set[str] = {start}
+        chain = [resolved["qualified_name"]]
+        visited: set[str] = {resolved["qualified_name"]}
+        current_parent: str | None = resolved.get("parent_class")
 
-        current_parent = parent
         while current_parent:
             if current_parent in visited:
                 break
             chain.append(current_parent)
             visited.add(current_parent)
-            _, next_parent = _lookup_class(current_parent)
-            current_parent = next_parent
+            # 沿继承链继续查，parent_class 存的是 qualified_name，直接精确匹配
+            next_row = self.conn.execute(
+                "SELECT qualified_name, parent_class FROM symbols "
+                "WHERE qualified_name = ? AND kind IN ('class','interface','object') LIMIT 1",
+                (current_parent,),
+            ).fetchone()
+            current_parent = next_row["parent_class"] if next_row else None
 
         return chain
 
@@ -391,25 +436,19 @@ class QueryEngine:
         class_name: str,
         direct_only: bool = False,
         limit: int = 50,
-    ) -> list[dict]:
+    ) -> list[dict] | dict:
         """返回直接或所有子类列表。
-        class_name 可以是简单名（FeedFragment）或全限定名（com.foo.FeedFragment）。
-        修复后 parent_class 存储全限定名，优先精确匹配全限定名，同时兜底匹配简单名。
+
+        class_name 优先匹配 qualified_name，其次匹配 name（唯一时）。
+        若 name 有歧义，返回 {"error": "ambiguous", "candidates": [...]}。
         """
-        # 先尝试找到标准全限定名
-        fqn_row = self.conn.execute(
-            "SELECT qualified_name FROM symbols WHERE qualified_name = ? "
-            "AND kind IN ('class','interface','object') LIMIT 1",
-            (class_name,),
-        ).fetchone()
-        if not fqn_row:
-            simple = class_name.split(".")[-1]
-            fqn_row = self.conn.execute(
-                "SELECT qualified_name FROM symbols WHERE name = ? "
-                "AND kind IN ('class','interface','object') LIMIT 1",
-                (simple,),
-            ).fetchone()
-        canonical = fqn_row["qualified_name"] if fqn_row else class_name
+        resolved = self._resolve_class(class_name)
+        if resolved is None:
+            return []
+        if resolved.get("__ambiguous__"):
+            return {"error": "ambiguous", "candidates": resolved["candidates"]}
+
+        canonical = resolved["qualified_name"]
 
         def _query(parent_val: str) -> list:
             return self.conn.execute(
@@ -421,8 +460,8 @@ class QueryEngine:
         if direct_only:
             return [_row_to_dict(r) for r in _query(canonical)]
 
-        # BFS 查找所有子类，使用 qualified_name 作为队列键
-        result = []
+        # BFS，全程用 qualified_name
+        result: list[dict] = []
         queue = [canonical]
         visited: set[str] = set()
 
@@ -434,8 +473,8 @@ class QueryEngine:
             for r in _query(current):
                 d = _row_to_dict(r)
                 result.append(d)
-                # 下一轮用 qualified_name 继续 BFS
-                queue.append(d["qualified_name"] or d["name"])
+                if d.get("qualified_name"):
+                    queue.append(d["qualified_name"])
 
         return result[:limit]
 
@@ -444,30 +483,22 @@ class QueryEngine:
         interface_name: str,
         module: str | None = None,
         limit: int = 50,
-    ) -> list[dict]:
+    ) -> list[dict] | dict:
         """返回实现了指定接口的所有类。
-        interface_name 可以是简单名或全限定名。
-        修复后 interfaces 存储全限定名 JSON 数组，优先精确匹配全限定名，
-        同时兜底匹配末段简单名（应对少数无 import 的情况）。
+
+        interface_name 优先匹配 qualified_name，其次匹配 name（唯一时）。
+        若 name 有歧义，返回 {"error": "ambiguous", "candidates": [...]}。
         """
-        # 先尝试找到标准全限定名
-        fqn_row = self.conn.execute(
-            "SELECT qualified_name FROM symbols WHERE qualified_name = ? "
-            "AND kind IN ('interface','class') LIMIT 1",
-            (interface_name,),
-        ).fetchone()
-        if not fqn_row:
-            simple = interface_name.split(".")[-1]
-            fqn_row = self.conn.execute(
-                "SELECT qualified_name FROM symbols WHERE name = ? "
-                "AND kind IN ('interface','class') LIMIT 1",
-                (simple,),
-            ).fetchone()
-        canonical = fqn_row["qualified_name"] if fqn_row else interface_name
+        resolved = self._resolve_class(interface_name, kinds=("interface", "class", "object"))
+        if resolved is None:
+            return []
+        if resolved.get("__ambiguous__"):
+            return {"error": "ambiguous", "candidates": resolved["candidates"]}
+
+        canonical = resolved["qualified_name"]
         simple = canonical.split(".")[-1]
 
-        # interfaces 存为 JSON 数组，用 json_each 精确匹配元素
-        # 同时匹配全限定名和简单名（兜底）
+        # interfaces 存为 JSON 数组，精确匹配全限定名，兜底匹配简单名
         filters = [
             "EXISTS (SELECT 1 FROM json_each(interfaces) WHERE value = ? OR value = ?)"
         ]
@@ -478,36 +509,94 @@ class QueryEngine:
             params.append(module)
 
         where = "WHERE " + " AND ".join(filters)
-        sql = f"SELECT * FROM symbols {where} LIMIT ?"
-        rows = self.conn.execute(sql, params + [limit]).fetchall()
+        rows = self.conn.execute(
+            f"SELECT * FROM symbols {where} LIMIT ?", params + [limit]
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    # 精简摘要用的字段集合：去掉 src_code / file_imports / 对成员无意义的字段
+    _MEMBER_SUMMARY_FIELDS = (
+        "id", "name", "kind", "visibility", "is_abstract", "is_override",
+        "return_type", "parameters", "signature", "annotations", "line_number",
+    )
+
+    def _query_members(self, qualified_name: str, include_private: bool) -> list[dict[str, Any]]:
+        """内部方法：按 qualified_name 精确查询成员列表，返回完整行。"""
+        filters = ["parent_class = ?"]
+        params: list[Any] = [qualified_name]
+        if not include_private:
+            filters.append("visibility NOT IN ('private')")
+        where = "WHERE " + " AND ".join(filters)
+        rows = self.conn.execute(
+            f"SELECT * FROM symbols {where} ORDER BY kind, name", params
+        ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
     def get_class_api(
         self,
         class_name: str,
         include_private: bool = False,
-    ) -> list[dict]:
-        """返回类的公开（或全部）成员。
+    ) -> list[dict[str, Any]] | dict:
+        """返回类的成员摘要列表（精简版，不含 src_code）。
 
-        class_name 可以是简单名（FeedFragment）或全限定名（com.foo.FeedFragment）。
-        成员符号的 parent_class 列存储的是全限定名，因此同时匹配：
-          - 精确等值（传入本身就是全限定名时命中）
-          - LIKE '%.simple' （传入简单名时，匹配全限定名末段）
-        两种情况取并集，避免漏匹配。
+        每个成员只保留 AI 做决策所需的核心字段，过滤掉 null 值，
+        约为完整返回的 1/10 token 消耗。
+        需要查看某个方法的完整源码，请用 get_symbol_source(id)。
+        需要完整数据（含 src_code 和 file_imports），请用 get_class_api_full()。
+
+        class_name 优先匹配 qualified_name，其次匹配 name（唯一时）。
+        若 name 有歧义，返回 {"error": "ambiguous", "candidates": [...]}。
         """
-        simple = class_name.split(".")[-1]
+        resolved = self._resolve_class(class_name)
+        if resolved is None:
+            return []
+        if resolved.get("__ambiguous__"):
+            return {"error": "ambiguous", "candidates": resolved["candidates"]}
 
-        parent_filter = "(parent_class = ? OR parent_class LIKE ?)"
-        filters = [parent_filter]
-        params: list[Any] = [class_name, f"%.{simple}"]
+        members = self._query_members(resolved["qualified_name"], include_private)
+        return [
+            {k: m[k] for k in self._MEMBER_SUMMARY_FIELDS if m.get(k) is not None}
+            for m in members
+        ]
 
-        if not include_private:
-            filters.append("visibility NOT IN ('private')")
+    def get_class_api_full(
+        self,
+        class_name: str,
+        include_private: bool = False,
+    ) -> dict[str, Any]:
+        """返回类的完整成员列表（含 src_code）以及该文件的 import 列表。
 
-        where = "WHERE " + " AND ".join(filters)
-        sql = f"SELECT * FROM symbols {where} ORDER BY kind, name"
-        rows = self.conn.execute(sql, params).fetchall()
-        return [_row_to_dict(r) for r in rows]
+        适合需要深入分析一个类的场景，token 消耗较高。
+        返回格式：{"members": [...], "file_imports": [...]}
+        若 name 有歧义，返回 {"error": "ambiguous", "candidates": [...]}。
+        """
+        resolved = self._resolve_class(class_name)
+        if resolved is None:
+            return {"members": [], "file_imports": []}
+        if resolved.get("__ambiguous__"):
+            return {"error": "ambiguous", "candidates": resolved["candidates"]}
+
+        members = self._query_members(resolved["qualified_name"], include_private)
+        file_imports = self.get_file_imports(resolved["file_path"]) if resolved.get("file_path") else []
+        return {"members": members, "file_imports": file_imports}
+
+    def get_symbol_source(self, symbol_id: int) -> dict[str, Any] | None:
+        """按 id 返回单个符号的源码及基本定位信息。
+
+        返回格式：{"id", "name", "kind", "file_path", "line_number", "src_code"}
+        若符号不存在或无 src_code，返回 None。
+        """
+        row = self.conn.execute(
+            "SELECT id, name, kind, file_path, line_number, src_code "
+            "FROM symbols WHERE id = ?",
+            (symbol_id,),
+        ).fetchone()
+        if not row:
+            return None
+        d = _row_to_dict(row)
+        if not d.get("src_code"):
+            return None
+        return d
 
     def find_layout(
         self,
