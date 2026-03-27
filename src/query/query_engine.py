@@ -99,7 +99,7 @@ class QueryEngine:
         total = self.conn.execute(count_sql, [fts_query] + filter_params).fetchone()[0]
 
         sql = f"""
-            SELECT s.*
+            SELECT s.*, fts_matches.score AS _score
             FROM (
                 SELECT ft.rowid AS match_id, bm25(symbols_fts, 10.0, 10.0, 1.0, 1.0) AS score
                 FROM symbols_fts ft
@@ -114,9 +114,24 @@ class QueryEngine:
             sql, [fts_query] + filter_params + [limit, offset]
         ).fetchall()
 
+        # 长度惩罚：coverage = len(keyword) / len(name)，衡量关键词对名称的覆盖率。
+        # 精确匹配（FeedFragment）coverage=1.0，前缀扩展（FeedFragmentAdapter）coverage<1.0。
+        # 合并分数：final = bm25_score - α * coverage
+        # BM25 分数为负数，越小越靠前；coverage 越大说明越精确，减去后使其排名更靠前。
+        # α=5.0 经验值：覆盖率差 0.1 约等于 0.5 分的 BM25 差距。
+        kw_len = len(keyword)
+        _ALPHA = 5.0
+
+        def _final_score(row_dict: dict) -> float:
+            name_len = len(row_dict.get("name") or "")
+            coverage = kw_len / name_len if name_len > 0 else 0.0
+            return row_dict["_score"] - _ALPHA * coverage
+
+        items_raw = [_row_to_dict(r) for r in rows]
+        items_raw.sort(key=_final_score)
+
         items = []
-        for r in rows:
-            d = _row_to_dict(r)
+        for d in items_raw:
             d.pop("_score", None)
             items.append(d)
 
@@ -291,7 +306,11 @@ class QueryEngine:
         return [_row_to_dict(r) for r in rows]
 
     def get_module_overview(self, module: str) -> dict[str, Any]:
-        """返回模块统计：sdk/impl 类数、接口数、函数数、文件数。"""
+        """返回模块统计：sdk/impl 类数、接口数、函数数、文件数。
+
+        依赖 (module, kind, source_set) 和 (module, kind) 联合覆盖索引，
+        每次 COUNT 均为索引范围扫描，不需要回表。
+        """
         def _count(kind: str, source_set: str | None = None) -> int:
             if source_set:
                 r = self.conn.execute(
@@ -326,25 +345,44 @@ class QueryEngine:
         """
         返回 class_name 到根类的继承链（含自身）。
 
+        class_name 可以是简单名或全限定名。
+        修复后 parent_class 存储全限定名，遍历时直接用全限定名查询；
+        同时也支持简单名输入（取 qualified_name 末段匹配）。
         遇到未知父类时终止，不抛异常。
         """
-        chain = [class_name]
-        visited: set[str] = {class_name}
-        current = class_name
-
-        while True:
+        # 先尝试用输入解析出起始类的 qualified_name
+        def _lookup_class(name: str) -> tuple[str | None, str | None]:
+            """返回 (qualified_name, parent_class)，查不到返回 (None, None)。"""
+            # 优先精确匹配 qualified_name，再回退到 name 匹配
             row = self.conn.execute(
-                "SELECT parent_class FROM symbols WHERE name = ? AND kind IN ('class','interface')",
-                (current,),
+                "SELECT qualified_name, parent_class FROM symbols "
+                "WHERE qualified_name = ? AND kind IN ('class','interface') LIMIT 1",
+                (name,),
             ).fetchone()
-            if not row or not row["parent_class"]:
+            if not row:
+                simple = name.split(".")[-1]
+                row = self.conn.execute(
+                    "SELECT qualified_name, parent_class FROM symbols "
+                    "WHERE name = ? AND kind IN ('class','interface') LIMIT 1",
+                    (simple,),
+                ).fetchone()
+            if row:
+                return row["qualified_name"], row["parent_class"]
+            return None, None
+
+        qname, parent = _lookup_class(class_name)
+        start = qname or class_name
+        chain = [start]
+        visited: set[str] = {start}
+
+        current_parent = parent
+        while current_parent:
+            if current_parent in visited:
                 break
-            parent = row["parent_class"]
-            if parent in visited:
-                break  # 防循环
-            chain.append(parent)
-            visited.add(parent)
-            current = parent
+            chain.append(current_parent)
+            visited.add(current_parent)
+            _, next_parent = _lookup_class(current_parent)
+            current_parent = next_parent
 
         return chain
 
@@ -355,24 +393,37 @@ class QueryEngine:
         limit: int = 50,
     ) -> list[dict]:
         """返回直接或所有子类列表。
-        class_name 可以是简单名（FeedFragment）或全限定名（com.foo.FeedFragment），
-        均取末段简单名做精确匹配。
+        class_name 可以是简单名（FeedFragment）或全限定名（com.foo.FeedFragment）。
+        修复后 parent_class 存储全限定名，优先精确匹配全限定名，同时兜底匹配简单名。
         """
-        simple = class_name.split(".")[-1]
+        # 先尝试找到标准全限定名
+        fqn_row = self.conn.execute(
+            "SELECT qualified_name FROM symbols WHERE qualified_name = ? "
+            "AND kind IN ('class','interface','object') LIMIT 1",
+            (class_name,),
+        ).fetchone()
+        if not fqn_row:
+            simple = class_name.split(".")[-1]
+            fqn_row = self.conn.execute(
+                "SELECT qualified_name FROM symbols WHERE name = ? "
+                "AND kind IN ('class','interface','object') LIMIT 1",
+                (simple,),
+            ).fetchone()
+        canonical = fqn_row["qualified_name"] if fqn_row else class_name
 
-        def _query(name: str) -> list:
+        def _query(parent_val: str) -> list:
             return self.conn.execute(
                 "SELECT * FROM symbols WHERE parent_class = ? "
                 "AND kind IN ('class','interface','object') LIMIT ?",
-                (name, limit),
+                (parent_val, limit),
             ).fetchall()
 
         if direct_only:
-            return [_row_to_dict(r) for r in _query(simple)]
+            return [_row_to_dict(r) for r in _query(canonical)]
 
-        # BFS 查找所有子类
+        # BFS 查找所有子类，使用 qualified_name 作为队列键
         result = []
-        queue = [simple]
+        queue = [canonical]
         visited: set[str] = set()
 
         while queue and len(result) < limit:
@@ -383,7 +434,8 @@ class QueryEngine:
             for r in _query(current):
                 d = _row_to_dict(r)
                 result.append(d)
-                queue.append(d["name"])
+                # 下一轮用 qualified_name 继续 BFS
+                queue.append(d["qualified_name"] or d["name"])
 
         return result[:limit]
 
@@ -394,14 +446,32 @@ class QueryEngine:
         limit: int = 50,
     ) -> list[dict]:
         """返回实现了指定接口的所有类。
-        interface_name 可以是简单名或全限定名，均取末段做精确 JSON 元素匹配。
+        interface_name 可以是简单名或全限定名。
+        修复后 interfaces 存储全限定名 JSON 数组，优先精确匹配全限定名，
+        同时兜底匹配末段简单名（应对少数无 import 的情况）。
         """
-        simple = interface_name.split(".")[-1]
+        # 先尝试找到标准全限定名
+        fqn_row = self.conn.execute(
+            "SELECT qualified_name FROM symbols WHERE qualified_name = ? "
+            "AND kind IN ('interface','class') LIMIT 1",
+            (interface_name,),
+        ).fetchone()
+        if not fqn_row:
+            simple = interface_name.split(".")[-1]
+            fqn_row = self.conn.execute(
+                "SELECT qualified_name FROM symbols WHERE name = ? "
+                "AND kind IN ('interface','class') LIMIT 1",
+                (simple,),
+            ).fetchone()
+        canonical = fqn_row["qualified_name"] if fqn_row else interface_name
+        simple = canonical.split(".")[-1]
+
         # interfaces 存为 JSON 数组，用 json_each 精确匹配元素
+        # 同时匹配全限定名和简单名（兜底）
         filters = [
-            "EXISTS (SELECT 1 FROM json_each(interfaces) WHERE value = ?)"
+            "EXISTS (SELECT 1 FROM json_each(interfaces) WHERE value = ? OR value = ?)"
         ]
-        params: list[Any] = [simple]
+        params: list[Any] = [canonical, simple]
 
         if module:
             filters.append("module = ?")
@@ -417,9 +487,19 @@ class QueryEngine:
         class_name: str,
         include_private: bool = False,
     ) -> list[dict]:
-        """返回类的公开（或全部）成员。"""
-        filters = ["parent_class = ?"]
-        params: list[Any] = [class_name]
+        """返回类的公开（或全部）成员。
+
+        class_name 可以是简单名（FeedFragment）或全限定名（com.foo.FeedFragment）。
+        成员符号的 parent_class 列存储的是全限定名，因此同时匹配：
+          - 精确等值（传入本身就是全限定名时命中）
+          - LIKE '%.simple' （传入简单名时，匹配全限定名末段）
+        两种情况取并集，避免漏匹配。
+        """
+        simple = class_name.split(".")[-1]
+
+        parent_filter = "(parent_class = ? OR parent_class LIKE ?)"
+        filters = [parent_filter]
+        params: list[Any] = [class_name, f"%.{simple}"]
 
         if not include_private:
             filters.append("visibility NOT IN ('private')")

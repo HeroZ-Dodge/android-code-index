@@ -61,6 +61,8 @@ CREATE INDEX IF NOT EXISTS idx_symbols_visibility     ON symbols(visibility);
 CREATE INDEX IF NOT EXISTS idx_symbols_return_type    ON symbols(return_type);
 CREATE INDEX IF NOT EXISTS idx_symbols_resource_value ON symbols(resource_value);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind_id        ON symbols(kind, id);
+CREATE INDEX IF NOT EXISTS idx_symbols_module_kind    ON symbols(module, kind);
+CREATE INDEX IF NOT EXISTS idx_symbols_module_kind_ss ON symbols(module, kind, source_set);
 """
 
 _CREATE_MODULE_DEPS = """

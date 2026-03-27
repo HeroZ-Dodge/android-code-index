@@ -2,52 +2,140 @@
 import { ref, computed } from 'vue'
 import client from '@/api/client'
 
-const endpoints = [
-  { label: 'GET /stats', path: '/stats', params: [] },
-  { label: 'GET /stats/breakdown', path: '/stats/breakdown', params: [] },
-  { label: 'GET /modules', path: '/modules', params: [] },
-  { label: 'GET /search/code', path: '/search/code', params: [
-    { name: 'keyword', type: 'string', required: true },
-    { name: 'kind', type: 'string', required: false },
-    { name: 'module', type: 'string', required: false },
-    { name: 'use_tokens', type: 'boolean', required: false },
-    { name: 'limit', type: 'number', required: false },
-    { name: 'offset', type: 'number', required: false },
-  ]},
-  { label: 'GET /search/resource', path: '/search/resource', params: [
-    { name: 'keyword', type: 'string', required: true },
-    { name: 'kind', type: 'string', required: false },
-    { name: 'module', type: 'string', required: false },
-    { name: 'use_tokens', type: 'boolean', required: false },
-    { name: 'limit', type: 'number', required: false },
-    { name: 'offset', type: 'number', required: false },
-  ]},
-  { label: 'GET /modules/{module}/overview', path: '/modules/{module}/overview', params: [
-    { name: 'module', type: 'string', required: true },
-  ]},
-  { label: 'GET /modules/{module}/dependencies', path: '/modules/{module}/dependencies', params: [
-    { name: 'module', type: 'string', required: true },
-  ]},
-  { label: 'GET /modules/{module}/files', path: '/modules/{module}/files', params: [
-    { name: 'module', type: 'string', required: true },
-    { name: 'source_set', type: 'string', required: false },
-  ]},
-  { label: 'GET /symbols/class', path: '/symbols/class', params: [
-    { name: 'name', type: 'string', required: false },
-    { name: 'module', type: 'string', required: false },
-    { name: 'limit', type: 'number', required: false },
-  ]},
-  { label: 'GET /resources/drawables', path: '/resources/drawables', params: [
-    { name: 'name', type: 'string', required: false },
-    { name: 'module', type: 'string', required: false },
-    { name: 'limit', type: 'number', required: false },
-  ]},
-  { label: 'GET /resources/layouts', path: '/resources/layouts', params: [
-    { name: 'name', type: 'string', required: false },
-    { name: 'module', type: 'string', required: false },
-    { name: 'limit', type: 'number', required: false },
-  ]},
+// 按功能分组，与 http_api.py 中所有 20 个端点一一对应
+const endpointGroups = [
+  {
+    group: '统计',
+    items: [
+      { label: 'GET /stats', path: '/stats', params: [] },
+      { label: 'GET /stats/breakdown', path: '/stats/breakdown', params: [] },
+    ],
+  },
+  {
+    group: '搜索',
+    items: [
+      { label: 'GET /search/code', path: '/search/code', params: [
+        { name: 'keyword', type: 'string', required: true, placeholder: '如 FeedFragment' },
+        { name: 'kind', type: 'string', required: false, placeholder: 'class | interface | function | property | object' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'use_tokens', type: 'string', required: false, placeholder: 'true | false' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
+        { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
+      ]},
+      { label: 'GET /search/resource', path: '/search/resource', params: [
+        { name: 'keyword', type: 'string', required: true, placeholder: '如 feed_item' },
+        { name: 'kind', type: 'string', required: false, placeholder: 'layout | style | drawable | manifest_component' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'use_tokens', type: 'string', required: false, placeholder: 'true | false' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
+        { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
+      ]},
+    ],
+  },
+  {
+    group: '符号查询',
+    items: [
+      { label: 'GET /symbols/class', path: '/symbols/class', params: [
+        { name: 'name', type: 'string', required: false, placeholder: '如 FeedFragment' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'parent_class', type: 'string', required: false, placeholder: '如 BaseFragment' },
+        { name: 'annotation', type: 'string', required: false, placeholder: '如 HiltViewModel' },
+        { name: 'source_set', type: 'string', required: false, placeholder: 'sdk | impl' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
+        { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
+      ]},
+      { label: 'GET /symbols/function', path: '/symbols/function', params: [
+        { name: 'name', type: 'string', required: false, placeholder: '如 onCreate' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'return_type', type: 'string', required: false, placeholder: '如 Boolean' },
+        { name: 'visibility', type: 'string', required: false, placeholder: 'public | private | protected | internal' },
+        { name: 'annotation', type: 'string', required: false, placeholder: '如 Override' },
+        { name: 'source_set', type: 'string', required: false, placeholder: 'sdk | impl' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
+        { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
+      ]},
+      { label: 'GET /symbols/interface', path: '/symbols/interface', params: [
+        { name: 'name', type: 'string', required: false, placeholder: '如 IFeedService' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'source_set', type: 'string', required: false, placeholder: 'sdk | impl' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
+        { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
+      ]},
+      { label: 'GET /files/{file_path}/symbols', path: '/files/{file_path}/symbols', params: [
+        { name: 'file_path', type: 'string', required: true, placeholder: '如 compfeed/src/main/java/com/netease/gl/compfeed/ad/AdDialogFrequencyLimitHelper.kt' },
+      ]},
+    ],
+  },
+  {
+    group: '类关系',
+    items: [
+      { label: 'GET /classes/{class_name}/inheritance', path: '/classes/{class_name}/inheritance', params: [
+        { name: 'class_name', type: 'string', required: true, placeholder: '如 FeedFragment' },
+      ]},
+      { label: 'GET /classes/{class_name}/subclasses', path: '/classes/{class_name}/subclasses', params: [
+        { name: 'class_name', type: 'string', required: true, placeholder: '如 BaseFragment' },
+        { name: 'direct_only', type: 'string', required: false, placeholder: 'true | false，默认 false' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 50' },
+      ]},
+      { label: 'GET /interfaces/{interface_name}/implementations', path: '/interfaces/{interface_name}/implementations', params: [
+        { name: 'interface_name', type: 'string', required: true, placeholder: '如 IFeedService' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 50' },
+      ]},
+      { label: 'GET /classes/{class_name}/api', path: '/classes/{class_name}/api', params: [
+        { name: 'class_name', type: 'string', required: true, placeholder: '如 FeedFragment' },
+        { name: 'include_private', type: 'string', required: false, placeholder: 'true | false，默认 false' },
+      ]},
+    ],
+  },
+  {
+    group: '模块',
+    items: [
+      { label: 'GET /modules', path: '/modules', params: [] },
+      { label: 'GET /modules/{module}/overview', path: '/modules/{module}/overview', params: [
+        { name: 'module', type: 'string', required: true, placeholder: '如 :compfeed' },
+      ]},
+      { label: 'GET /modules/{module}/files', path: '/modules/{module}/files', params: [
+        { name: 'module', type: 'string', required: true, placeholder: '如 :compfeed' },
+        { name: 'source_set', type: 'string', required: false, placeholder: 'sdk | impl' },
+      ]},
+      { label: 'GET /modules/{module}/dependencies', path: '/modules/{module}/dependencies', params: [
+        { name: 'module', type: 'string', required: true, placeholder: '如 :compfeed' },
+        { name: 'scope', type: 'string', required: false, placeholder: 'api | implementation | …' },
+        { name: 'syntax', type: 'string', required: false, placeholder: 'component | project' },
+      ]},
+    ],
+  },
+  {
+    group: '资源',
+    items: [
+      { label: 'GET /resources/layouts', path: '/resources/layouts', params: [
+        { name: 'name', type: 'string', required: false, placeholder: '如 fragment_feed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
+      ]},
+      { label: 'GET /resources/styles', path: '/resources/styles', params: [
+        { name: 'name', type: 'string', required: false, placeholder: '如 AppTheme' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
+      ]},
+      { label: 'GET /resources/drawables', path: '/resources/drawables', params: [
+        { name: 'name', type: 'string', required: false, placeholder: '如 ic_feed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 50' },
+      ]},
+      { label: 'GET /manifest/components', path: '/manifest/components', params: [
+        { name: 'name', type: 'string', required: false, placeholder: '如 FeedActivity' },
+        { name: 'component_type', type: 'string', required: false, placeholder: 'activity | service | receiver | provider' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
+      ]},
+    ],
+  },
 ]
+
+// 展平为带分组标记的列表供 el-select 使用
+const endpoints = endpointGroups.flatMap(g => g.items.map(item => ({ ...item, group: g.group })))
 
 const selectedIdx = ref(0)
 const selected = computed(() => endpoints[selectedIdx.value])
@@ -113,12 +201,19 @@ function onEndpointChange() {
             style="width: 100%"
             @change="onEndpointChange"
           >
-            <el-option
-              v-for="(ep, i) in endpoints"
-              :key="i"
-              :label="ep.label"
-              :value="i"
-            />
+            <el-option-group
+              v-for="g in endpointGroups"
+              :key="g.group"
+              :label="g.group"
+            >
+              <el-option
+                v-for="(ep, i) in endpoints"
+                v-show="ep.group === g.group"
+                :key="i"
+                :label="ep.label"
+                :value="i"
+              />
+            </el-option-group>
           </el-select>
         </div>
 
@@ -131,7 +226,7 @@ function onEndpointChange() {
             </div>
             <el-input
               v-model="paramValues[p.name]"
-              :placeholder="`${p.type}`"
+              :placeholder="p.placeholder ?? p.type"
               size="small"
             />
           </div>

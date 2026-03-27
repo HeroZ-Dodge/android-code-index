@@ -50,10 +50,63 @@ def _children_of_type(node, *types) -> list:
 def _extract_package(root, src: bytes) -> str:
     for child in root.children:
         if child.type == "package_header":
+            # grammar v1: field name "identifier"
             id_node = child.child_by_field_name("identifier")
             if id_node:
                 return _text(id_node, src)
+            # grammar v2 (tree-sitter-kotlin 1.x): child type "qualified_identifier"
+            for c in child.children:
+                if c.type in ("qualified_identifier", "identifier"):
+                    return _text(c, src)
     return ""
+
+
+# ──────────────────────────────────────────────
+# 提取 import 映射：简单名 → 全限定名
+# ──────────────────────────────────────────────
+
+def _extract_imports(root, src: bytes) -> dict[str, str]:
+    """解析文件顶部的 import 语句，返回 {简单名: 全限定名} 映射。
+    仅处理具名 import（不含 * 通配符导入）。
+    """
+    mapping: dict[str, str] = {}
+
+    def _handle_import_node(imp) -> None:
+        # 兼容 import_header（旧 grammar）和 import（新 grammar）
+        id_node = imp.child_by_field_name("identifier")
+        if not id_node:
+            for c in imp.children:
+                if c.type in ("qualified_identifier", "identifier"):
+                    id_node = c
+                    break
+        if id_node:
+            fqn = _text(id_node, src)
+            if "*" not in fqn:
+                simple = fqn.split(".")[-1]
+                mapping[simple] = fqn
+
+    for child in root.children:
+        if child.type == "import_list":
+            for imp in child.children:
+                if imp.type in ("import_header", "import"):
+                    _handle_import_node(imp)
+        elif child.type in ("import_header", "import"):
+            _handle_import_node(child)
+    return mapping
+
+
+def _resolve_name(simple: str, package: str, imports: dict[str, str]) -> str:
+    """将简单类名解析为全限定名。
+    优先级：import 表 > 同包推断（含包名时） > 原样返回。
+    """
+    if "." in simple:
+        # 已经是全限定名（或带泛型如 Map.Entry），直接返回基础部分
+        return simple.split("<")[0].strip()
+    if simple in imports:
+        return imports[simple]
+    if package:
+        return f"{package}.{simple}"
+    return simple
 
 
 # ──────────────────────────────────────────────
@@ -127,7 +180,8 @@ def _extract_interfaces(delegation_specifiers_node, src: bytes) -> str | None:
 
 def _parse_class_body(body_node, src: bytes, package: str,
                       parent_qualified: str, module: str,
-                      file_path: str, source_set: str) -> list[dict]:
+                      file_path: str, source_set: str,
+                      imports: dict[str, str]) -> list[dict]:
     symbols = []
 
     def _process_node(child) -> None:
@@ -149,7 +203,7 @@ def _parse_class_body(body_node, src: bytes, package: str,
         elif child.type in ("class_declaration", "object_declaration",
                             "companion_object"):
             syms = _parse_class(child, src, package, parent_qualified,
-                                module, file_path, source_set)
+                                module, file_path, source_set, imports)
             symbols.extend(syms)
 
     for child in body_node.children:
@@ -300,8 +354,9 @@ def _detect_class_kind(node, src: bytes) -> str:
     return base
 
 
-def _delegation_simple_name(spec_node, src: bytes) -> str:
-    """从 delegation_specifier 节点提取简单类名（剥掉泛型和构造参数）。
+def _delegation_fqn(spec_node, src: bytes, package: str,
+                    imports: dict[str, str]) -> str:
+    """从 delegation_specifier 节点提取全限定类名（剥掉泛型和构造参数后解析）。
     delegation_specifier → constructor_invocation → user_type → identifier
     delegation_specifier → user_type → identifier
     """
@@ -319,14 +374,18 @@ def _delegation_simple_name(spec_node, src: bytes) -> str:
         id_node = next((g for g in user_type.children
                         if g.type in ("identifier", "type_identifier")), None)
         if id_node:
-            return _text(id_node, src)
+            simple = _text(id_node, src)
+            return _resolve_name(simple, package, imports)
     # 兜底：取文本后剥掉 (<) 部分
-    raw = _text(spec_node, src).strip()
-    return raw.split("<")[0].split("(")[0].strip()
+    raw = _text(spec_node, src).strip().split("<")[0].split("(")[0].strip()
+    return _resolve_name(raw, package, imports)
 
 
 def _parse_class(node, src: bytes, package: str, parent_qualified: str,
-                 module: str, file_path: str, source_set: str) -> list[dict]:
+                 module: str, file_path: str, source_set: str,
+                 imports: dict[str, str] | None = None) -> list[dict]:
+    if imports is None:
+        imports = {}
     name_node = (node.child_by_field_name("name")
                  or node.child_by_field_name("simple_identifier")
                  or next((c for c in node.children if c.type == "identifier"), None))
@@ -353,14 +412,14 @@ def _parse_class(node, src: bytes, package: str, parent_qualified: str,
                 first = specs[0]
                 has_ctor = any(c.type == "constructor_invocation" for c in first.children)
                 if has_ctor:
-                    parent_class = _delegation_simple_name(first, src)
-                    interfaces = [_delegation_simple_name(s, src) for s in specs[1:]]
+                    parent_class = _delegation_fqn(first, src, package, imports)
+                    interfaces = [_delegation_fqn(s, src, package, imports) for s in specs[1:]]
                 else:
                     # 没有构造调用，全部是接口实现（无父类）
-                    interfaces = [_delegation_simple_name(s, src) for s in specs]
+                    interfaces = [_delegation_fqn(s, src, package, imports) for s in specs]
             else:
                 # interface / object：所有 spec 都是扩展接口
-                interfaces = [_delegation_simple_name(s, src) for s in specs]
+                interfaces = [_delegation_fqn(s, src, package, imports) for s in specs]
 
     is_abstract = any(
         c.type == "modifier" and _text(c, src) == "abstract"
@@ -405,7 +464,7 @@ def _parse_class(node, src: bytes, package: str, parent_qualified: str,
     if body:
         symbols.extend(
             _parse_class_body(body, src, package, qualified_name,
-                              module, file_path, source_set)
+                              module, file_path, source_set, imports)
         )
 
     return symbols
@@ -432,6 +491,7 @@ def parse_kotlin_file(
         root = tree.root_node
 
         package = _extract_package(root, src)
+        imports = _extract_imports(root, src)
         symbols: list[dict] = []
 
         def _process_top_level(child) -> None:
@@ -443,7 +503,7 @@ def parse_kotlin_file(
                                 "object_declaration"):
                 symbols.extend(
                     _parse_class(child, src, package, "",
-                                 module, str(file_path), source_set)
+                                 module, str(file_path), source_set, imports)
                 )
             elif child.type == "function_declaration":
                 sym = _parse_function(child, src, package, "",

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, shallowReactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useModuleStore } from '@/stores/modules'
 import { useDrawerStore } from '@/stores/drawer'
@@ -29,39 +29,57 @@ const filteredModules = computed(() =>
 
 async function selectMod(mod: string) {
   // 切换模块时清空已展开的文件
-  expandedFiles.value = {}
-  fileError.value = {}
+  Object.keys(expandedFiles).forEach(k => delete expandedFiles[k])
+  Object.keys(fileError).forEach(k => delete fileError[k])
+  Object.keys(loadingFiles).forEach(k => delete loadingFiles[k])
+  Object.keys(collapsedDirs).forEach(k => delete collapsedDirs[k])
   await store.selectModule(mod)
   router.replace({ path: `/modules/${encodeURIComponent(mod)}` })
 }
 
 // 文件树：每个文件的展开符号
-const expandedFiles = ref<Record<string, Symbol[]>>({})
-const loadingFile = ref<string | null>(null)
-const fileError = ref<Record<string, string>>({})
+// 全部使用 shallowReactive 替代 ref<Record>：对某个 key 的修改只触发
+// 依赖该 key 的那一行 vnode diff，不会让目录内所有行都重新 patch
+const expandedFiles = shallowReactive<Record<string, Symbol[]>>({})
+// loadingFiles 用 Record<path, true> 替代 ref<string|null>，避免
+// 点击一个文件时让目录内其余所有行都进行 diff
+const loadingFiles = shallowReactive<Record<string, boolean>>({})
+const fileError = shallowReactive<Record<string, string>>({})
+
+// 目录折叠状态：默认全部折叠，减少初始 DOM 数量
+const collapsedDirs = shallowReactive<Record<string, boolean>>({})
+
+function isDirCollapsed(dirPath: string): boolean {
+  // 未设置时默认折叠
+  return collapsedDirs[dirPath] !== false
+}
+
+function toggleDir(dirPath: string) {
+  collapsedDirs[dirPath] = isDirCollapsed(dirPath) ? false : true
+}
 
 async function toggleFile(file: ModuleFile) {
   const key = file.file_path
-  if (expandedFiles.value[key]) {
-    delete expandedFiles.value[key]
-    delete fileError.value[key]
+  if (expandedFiles[key]) {
+    delete expandedFiles[key]
+    delete fileError[key]
     return
   }
-  loadingFile.value = key
-  delete fileError.value[key]
+  loadingFiles[key] = true
+  delete fileError[key]
   try {
     // 去掉开头 / 以匹配路由路径格式，并进行 URL 编码
     const encodedPath = encodeURIComponent(file.file_path.replace(/^\//, ''))
     const symbols = await getFileSymbols(encodedPath)
-    expandedFiles.value[key] = symbols
+    expandedFiles[key] = symbols
     if (symbols.length === 0) {
-      fileError.value[key] = '该文件无符号'
+      fileError[key] = '该文件无符号'
     }
   } catch (e: any) {
-    fileError.value[key] = e?.message ?? '加载符号失败'
+    fileError[key] = e?.message ?? '加载符号失败'
     console.error('加载文件符号失败:', file.file_path, e)
   } finally {
-    loadingFile.value = null
+    delete loadingFiles[key]
   }
 }
 
@@ -149,54 +167,67 @@ const depSyntaxType = (syntax: string) =>
               <div v-if="!files" style="color: #9ca3af; text-align: center; padding: 24px">加载中...</div>
               <div v-else-if="!files.length" style="color: #9ca3af; text-align: center; padding: 24px">无文件</div>
               <template v-else>
-                <div v-for="group in files" :key="group.dir_path" style="margin-bottom: 16px">
-                  <div style="font-size: 12px; color: #6b7280; font-family: monospace; margin-bottom: 6px; padding: 4px 8px; background: #f8f9fc; border-radius: 4px">
-                    {{ group.dir_path }}
-                  </div>
+                <div v-for="group in files" :key="group.dir_path" style="margin-bottom: 4px">
+                  <!-- 目录行：可点击折叠/展开 -->
                   <div
-                    v-for="file in group.files"
-                    :key="file.file_path"
-                    style="margin-left: 16px; margin-bottom: 4px"
+                    @click="toggleDir(group.dir_path)"
+                    style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #6b7280; font-family: monospace; padding: 4px 8px; background: #f8f9fc; border-radius: 4px; cursor: pointer; user-select: none"
+                    class="dir-row"
                   >
+                    <el-icon style="font-size: 11px; flex-shrink: 0; transition: transform 0.15s" :style="{ transform: isDirCollapsed(group.dir_path) ? 'rotate(-90deg)' : 'rotate(0deg)' }">
+                      <component is="ArrowDown" />
+                    </el-icon>
+                    <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ group.dir_path }}</span>
+                    <el-tag size="small" type="info" style="flex-shrink: 0">{{ group.files.length }}</el-tag>
+                  </div>
+
+                  <!-- 目录内文件列表：折叠时不渲染，避免大量 DOM -->
+                  <template v-if="!isDirCollapsed(group.dir_path)">
                     <div
-                      @click="toggleFile(file)"
-                      style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; cursor: pointer; background: #fff; border: 1px solid #e5e7eb"
+                      v-for="file in group.files"
+                      :key="file.file_path"
+                      style="margin-left: 16px; margin-top: 4px"
                     >
-                      <el-icon :style="{ color: loadingFile === file.file_path ? '#9ca3af' : '#6b7280' }">
-                        <component :is="expandedFiles[file.file_path] ? 'FolderOpened' : loadingFile === file.file_path ? 'Loading' : 'Document'" />
-                      </el-icon>
-                      <span style="font-family: monospace; font-size: 12px; flex: 1">
-                        {{ file.file_path.split('/').pop() }}
-                      </span>
-                      <el-tag size="small" type="info">{{ file.file_type }}</el-tag>
-                      <el-tag size="small">{{ file.symbol_count }}</el-tag>
-                    </div>
-
-                    <!-- 加载状态 -->
-                    <div v-if="loadingFile === file.file_path" style="margin-left: 24px; margin-top: 4px; color: #9ca3af; font-size: 12px">
-                      加载中...
-                    </div>
-
-                    <!-- 错误提示 -->
-                    <div v-if="fileError[file.file_path]" style="margin-left: 24px; margin-top: 4px; color: #ef4444; font-size: 12px">
-                      {{ fileError[file.file_path] }}
-                    </div>
-
-                    <!-- 展开的符号列表 -->
-                    <div v-if="expandedFiles[file.file_path]" style="margin-left: 24px; margin-top: 4px">
                       <div
-                        v-for="sym in expandedFiles[file.file_path]"
-                        :key="sym.id"
-                        @click="drawer.open(sym)"
-                        style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 4px; cursor: pointer; transition: background 0.15s"
-                        class="sym-row"
+                        @click="toggleFile(file)"
+                        style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; cursor: pointer; background: #fff; border: 1px solid #e5e7eb"
                       >
-                        <SymbolTag :kind="sym.kind" style="pointer-events: none" />
-                        <span style="font-size: 13px; pointer-events: none">{{ sym.name }}</span>
-                        <span style="font-size: 11px; color: #9ca3af; pointer-events: none">{{ sym.visibility }}</span>
+                        <el-icon :style="{ color: loadingFiles[file.file_path] ? '#9ca3af' : '#6b7280' }">
+                          <component :is="expandedFiles[file.file_path] ? 'FolderOpened' : loadingFiles[file.file_path] ? 'Loading' : 'Document'" />
+                        </el-icon>
+                        <span style="font-family: monospace; font-size: 12px; flex: 1">
+                          {{ file.file_path.split('/').pop() }}
+                        </span>
+                        <el-tag size="small" type="info">{{ file.file_type }}</el-tag>
+                        <el-tag size="small">{{ file.symbol_count }}</el-tag>
+                      </div>
+
+                      <!-- 加载状态 -->
+                      <div v-if="loadingFiles[file.file_path]" style="margin-left: 24px; margin-top: 4px; color: #9ca3af; font-size: 12px">
+                        加载中...
+                      </div>
+
+                      <!-- 错误提示 -->
+                      <div v-if="fileError[file.file_path]" style="margin-left: 24px; margin-top: 4px; color: #ef4444; font-size: 12px">
+                        {{ fileError[file.file_path] }}
+                      </div>
+
+                      <!-- 展开的符号列表 -->
+                      <div v-if="expandedFiles[file.file_path]" style="margin-left: 24px; margin-top: 4px">
+                        <div
+                          v-for="sym in expandedFiles[file.file_path]"
+                          :key="sym.id"
+                          @click="drawer.open(sym)"
+                          style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 4px; cursor: pointer; transition: background 0.15s"
+                          class="sym-row"
+                        >
+                          <SymbolTag :kind="sym.kind" style="pointer-events: none" />
+                          <span style="font-size: 13px; pointer-events: none">{{ sym.name }}</span>
+                          <span style="font-size: 11px; color: #9ca3af; pointer-events: none">{{ sym.visibility }}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  </template>
                 </div>
               </template>
             </el-tab-pane>
@@ -239,4 +270,5 @@ const depSyntaxType = (syntax: string) =>
 <style scoped>
 .sym-row:hover { background: #f3f4f6; }
 .sym-row:active { background: #e5e7eb; }
+.dir-row:hover { background: #eef2ff; }
 </style>

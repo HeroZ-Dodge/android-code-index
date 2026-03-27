@@ -51,6 +51,38 @@ def _extract_package(root, src: bytes) -> str:
     return ""
 
 
+def _extract_imports(root, src: bytes) -> dict[str, str]:
+    """解析文件顶部的 import 语句，返回 {简单名: 全限定名} 映射。
+    仅处理具名 import（不含 * 通配符导入）。
+    """
+    mapping: dict[str, str] = {}
+    for child in root.children:
+        if child.type == "import_declaration":
+            # import com.foo.Bar; → 取 scoped_identifier 或 identifier
+            for c in child.children:
+                if c.type in ("scoped_identifier", "identifier"):
+                    fqn = _text(c, src)
+                    if "*" not in fqn:
+                        simple = fqn.split(".")[-1]
+                        mapping[simple] = fqn
+                    break
+    return mapping
+
+
+def _resolve_name(simple: str, package: str, imports: dict[str, str]) -> str:
+    """将简单类名解析为全限定名。
+    优先级：import 表 > 同包推断（含包名时） > 原样返回。
+    """
+    if "." in simple:
+        # 已经是全限定名（或带泛型如 Map.Entry），直接返回基础部分
+        return simple.split("<")[0].strip()
+    if simple in imports:
+        return imports[simple]
+    if package:
+        return f"{package}.{simple}"
+    return simple
+
+
 def _extract_annotations(node, src: bytes) -> str | None:
     annots = []
     for c in node.children:
@@ -182,7 +214,10 @@ def _parse_field(node, src: bytes, package: str, parent_qualified: str,
 # ──────────────────────────────────────────────
 
 def _parse_class(node, src: bytes, package: str, parent_qualified: str,
-                 module: str, file_path: str, source_set: str) -> list[dict]:
+                 module: str, file_path: str, source_set: str,
+                 imports: dict[str, str] | None = None) -> list[dict]:
+    if imports is None:
+        imports = {}
     name_node = node.child_by_field_name("name")
     if not name_node:
         return []
@@ -207,7 +242,7 @@ def _parse_class(node, src: bytes, package: str, parent_qualified: str,
         type_node = next((c for c in superclass_node.children
                           if c.type not in ("extends",)), None)
         if type_node:
-            parent_class = _simple_name(type_node, src)
+            parent_class = _resolve_name(_simple_name(type_node, src), package, imports)
 
     # 接口列表：child_by_field_name("interfaces") 实际返回 super_interfaces 节点
     interfaces = []
@@ -218,7 +253,7 @@ def _parse_class(node, src: bytes, package: str, parent_qualified: str,
         if type_list:
             for tc in type_list.children:
                 if tc.type != ",":
-                    interfaces.append(_simple_name(tc, src))
+                    interfaces.append(_resolve_name(_simple_name(tc, src), package, imports))
 
     is_abstract = int(_has_modifier(node, src, "abstract"))
     extra = None
@@ -262,7 +297,7 @@ def _parse_class(node, src: bytes, package: str, parent_qualified: str,
                                 "enum_declaration"):
                 symbols.extend(
                     _parse_class(child, src, package, qualified_name,
-                                 module, file_path, source_set)
+                                 module, file_path, source_set, imports)
                 )
 
     return symbols
@@ -289,6 +324,7 @@ def parse_java_file(
         root = tree.root_node
 
         package = _extract_package(root, src)
+        imports = _extract_imports(root, src)
         symbols: list[dict] = []
 
         for child in root.children:
@@ -296,7 +332,7 @@ def parse_java_file(
                               "enum_declaration", "annotation_type_declaration"):
                 symbols.extend(
                     _parse_class(child, src, package, "",
-                                 module, str(file_path), source_set)
+                                 module, str(file_path), source_set, imports)
                 )
 
         return symbols, None
