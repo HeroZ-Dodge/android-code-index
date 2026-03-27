@@ -249,9 +249,15 @@ class Indexer:
 
     # ── 增量更新 ──────────────────────────────
 
-    def index_update(self, project_root: Path) -> None:
-        """扫描项目，仅对新增或修改的文件重新解析，删除已消失的文件记录。"""
-        console.print(f"[bold]增量更新[/bold] {project_root}")
+    def index_update(self, project_root: Path, silent: bool = False) -> dict:
+        """扫描项目，仅对新增或修改的文件重新解析，删除已消失的文件记录。
+
+        Returns:
+            dict with keys: updated_files, deleted_files, failures, skipped
+            failures: list of (file_path, error_message) — parse 失败的文件（保留旧索引）
+        """
+        if not silent:
+            console.print(f"[bold]增量更新[/bold] {project_root}")
         source_files = scan_project(project_root)
 
         # 读取数据库中已知的 mtime
@@ -271,7 +277,8 @@ class Indexer:
                     self.conn.execute("DELETE FROM module_dependencies WHERE source_file = ?", (fp_str,))
                     self.conn.execute("DELETE FROM file_imports WHERE file_path = ?", (fp_str,))
                     self.conn.execute("DELETE FROM files WHERE file_path = ?", (fp_str,))
-            console.print(f"  删除失效文件: {len(deleted)} 个")
+            if not silent:
+                console.print(f"  删除失效文件: {len(deleted)} 个")
 
         # 2. 找出新增 / 修改的文件
         to_index: list[SourceFile] = []
@@ -286,17 +293,34 @@ class Indexer:
                 to_index.append(sf)
 
         if not to_index:
-            console.print("  [green]无需更新，所有文件均为最新。[/green]")
-            return
+            if not silent:
+                console.print("  [green]无需更新，所有文件均为最新。[/green]")
+            return {"updated_files": 0, "deleted_files": len(deleted), "failures": [], "skipped": 0}
 
-        console.print(f"  待重新索引: {len(to_index)} 个文件")
+        if not silent:
+            console.print(f"  待重新索引: {len(to_index)} 个文件")
         failures: list[tuple[str, str]] = []
 
-        with self.conn:
-            for sf in to_index:
-                _index_file(self.conn, sf, failures, project_root)
+        # 每个文件独立 transaction，单文件 parse 失败不影响其他文件
+        for sf in to_index:
+            try:
+                with self.conn:
+                    _index_file(self.conn, sf, failures, project_root)
+            except Exception as exc:
+                rel_path = "/" + str(sf.file_path.relative_to(project_root))
+                failures.append((rel_path, str(exc)))
+                if not silent:
+                    console.print(f"  [yellow]跳过失败文件:[/yellow] {rel_path} — {exc}")
 
-        self._report(len(to_index), failures)
+        if not silent:
+            self._report(len(to_index), failures)
+
+        return {
+            "updated_files": len(to_index),
+            "deleted_files": len(deleted),
+            "failures": failures,
+            "skipped": len(failures),
+        }
 
     # ── 工具 ──────────────────────────────────
 

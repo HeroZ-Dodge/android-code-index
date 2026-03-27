@@ -7,13 +7,17 @@ from pathlib import Path
 # 数据库路径
 # ──────────────────────────────────────────────
 
+# 所有项目的数据库统一放在 ~/.android-code-index/{project_name}/index.db
+_INDEX_ROOT = Path.home() / ".android-code-index"
+
+
 def get_db_path(project_name: str) -> Path:
-    """返回指定项目的数据库路径：~/.{project_name}/index.db。
+    """返回指定项目的数据库路径：~/.android-code-index/{project_name}/index.db。
 
     project_name 通常取 project_path 的目录名（basename），
-    如 project_path=/Users/foo/xxx.android → ~/.xxx.android/index.db
+    如 project_path=/Users/foo/xxx.android → ~/.android-code-index/xxx.android/index.db
     """
-    db_path = Path.home() / f".{project_name}" / "index.db"
+    db_path = _INDEX_ROOT / project_name / "index.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return db_path
 
@@ -24,7 +28,7 @@ def db_path_from_project(project_path: Path) -> Path:
 
 
 # 兼容旧代码：默认 DB 路径（环境变量 ANDROID_INDEX_DB 优先，否则用旧路径）
-_legacy_default = Path.home() / ".android-code-index" / "index.db"
+_legacy_default = _INDEX_ROOT / "index.db"
 DB_PATH = Path(os.environ.get("ANDROID_INDEX_DB", str(_legacy_default)))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 

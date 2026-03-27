@@ -40,6 +40,44 @@ def index_update(project_path: str) -> None:
     indexer.index_update(root)
 
 
+@index.command("watch")
+@click.argument("project_path", type=click.Path(exists=True, file_okay=False))
+@click.option(
+    "--debounce", "-d",
+    default=10.0,
+    show_default=True,
+    help="文件停止变化后等待多少秒再触发更新（debounce）。",
+)
+def index_watch(project_path: str, debounce: float) -> None:
+    """监听 PROJECT_PATH 的文件变化，自动触发增量索引更新（前台运行，Ctrl-C 停止）。
+
+    只关注 .kt / .java / .xml / .gradle / .kts 文件的新增、修改、删除。\n
+    单文件 parse 失败时会跳过并保留旧索引，不影响其他文件。\n
+    示例：\n
+      main.py index watch /path/to/xxx.android\n
+      main.py index watch /path/to/xxx.android --debounce 5
+    """
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    from src.indexer import Indexer
+    from src.watcher import ProjectWatcher
+
+    root = Path(project_path)
+    indexer = Indexer.for_project(root)
+    click.echo(f"DB: {indexer.db_path}")
+    click.echo(f"监听目录: {root}  debounce={debounce}s")
+    click.echo("按 Ctrl-C 停止...")
+
+    watcher = ProjectWatcher(root, indexer, debounce_seconds=debounce, verbose=True)
+    watcher.start()
+    watcher.join()
+
+
 # ──────────────────────────────────────────────
 # serve 命令组
 # ──────────────────────────────────────────────
@@ -51,34 +89,41 @@ def serve() -> None:
 
 @serve.command("mcp")
 @click.option(
-    "--project", "-p",
-    default=None,
-    help="项目名称（对应 ~/.{project}/index.db）。"
-         "不传时优先读取环境变量 ANDROID_INDEX_PROJECT，仍无则报错。",
+    "--watch", "-w",
+    is_flag=True,
+    default=False,
+    help="启动时同时开启后台文件监听，自动增量更新索引。项目路径取自 $PWD，项目名从路径末尾推导。",
 )
-def serve_mcp(project: str | None) -> None:
+@click.option(
+    "--debounce",
+    default=10.0,
+    show_default=True,
+    help="--watch 模式下的 debounce 秒数。",
+)
+def serve_mcp(watch: bool, debounce: float) -> None:
     """以 MCP Server（stdio transport）方式启动，供 Claude Code 调用。
 
+    项目名从 $PWD 末尾自动推导（如 /path/to/xxx.android → xxx.android）。\n
     示例：\n
-      main.py serve mcp --project xxx.android\n
-      ANDROID_INDEX_PROJECT=xxx.android main.py serve mcp
+      main.py serve mcp\n
+      main.py serve mcp --watch
     """
     import os
-    project = project or os.environ.get("ANDROID_INDEX_PROJECT")
-    if not project:
-        raise click.UsageError(
-            "必须通过 --project 或环境变量 ANDROID_INDEX_PROJECT 指定项目名称。\n"
-            "示例：main.py serve mcp --project xxx.android"
-        )
+    project_root = Path(os.environ.get("PWD", os.getcwd()))
+    project = project_root.name
+
     from src.config import get_db_path
     db_path = get_db_path(project)
     if not db_path.exists():
         raise click.UsageError(
             f"项目 '{project}' 的数据库不存在：{db_path}\n"
-            f"请先执行：main.py index full <project_path>"
+            f"请先执行：main.py index full {project_root}"
         )
     from src.server.mcp_server import run_mcp_server
-    run_mcp_server(db_path=db_path, project_name=project)
+
+    watcher_root = project_root if watch else None
+    run_mcp_server(db_path=db_path, project_name=project,
+                   watch_root=watcher_root, debounce_seconds=debounce)
 
 
 @serve.command("http")
@@ -156,27 +201,23 @@ def list_projects() -> None:
     """列出所有已建立索引的项目。"""
     from rich.console import Console
     from rich.table import Table
+    from src.config import _INDEX_ROOT
     import datetime
 
     console = Console()
-    home = Path.home()
-
-    # 已知系统/工具隐藏目录，排除
-    _SKIP_DIRS = {"Trash", "android-code-index", "DS_Store"}
 
     projects = []
-    for d in sorted(home.iterdir()):
-        if not d.is_dir() or not d.name.startswith("."):
-            continue
-        project_name = d.name[1:]  # 去掉开头的 .
-        if project_name in _SKIP_DIRS:
-            continue
-        db = d / "index.db"
-        if db.exists():
-            projects.append((project_name, db))
+    if _INDEX_ROOT.is_dir():
+        for d in sorted(_INDEX_ROOT.iterdir()):
+            if not d.is_dir():
+                continue
+            db = d / "index.db"
+            if db.exists():
+                projects.append((d.name, db))
 
     if not projects:
         console.print("[yellow]暂无已索引的项目。[/yellow]")
+        console.print(f"索引目录：{_INDEX_ROOT}")
         return
 
     table = Table(title="已索引项目", show_header=True)
@@ -191,7 +232,7 @@ def list_projects() -> None:
         table.add_row(name, str(db), f"{size_mb:.1f} MB", mtime)
 
     console.print(table)
-    console.print(f"\n启动 MCP：[cyan]main.py serve mcp --project <项目名>[/cyan]")
+    console.print(f"\n启动 MCP：[cyan]main.py serve mcp[/cyan]（在项目目录下执行）")
 
 
 if __name__ == "__main__":

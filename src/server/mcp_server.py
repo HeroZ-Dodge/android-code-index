@@ -421,7 +421,7 @@ async def list_tools() -> list[types.Tool]:
             name="update_index",
             description=(
                 "对当前项目执行增量索引更新：只重新解析新增或修改过的文件，删除已消失文件的记录。"
-                "project_path 为 Android 项目的绝对路径，如 '/Users/foo/ntesgod.android'。"
+                "project_path 为 Android 项目的绝对路径，如 '/Users/foo/xxx.android'。"
                 "当你发现代码与索引不一致，或用户告知刚修改了文件时，主动调用此工具更新索引。"
                 "返回格式：{updated_files, deleted_files, failures, elapsed_seconds}"
             ),
@@ -511,16 +511,46 @@ async def call_tool(
     return [types.TextContent(type="text", text=_json(result))]
 
 
-def run_mcp_server(db_path: Path | None = None, project_name: str = "unknown") -> None:
+def run_mcp_server(
+    db_path: Path | None = None,
+    project_name: str = "unknown",
+    watch_root: Path | None = None,
+    debounce_seconds: float = 3.0,
+) -> None:
     """以 stdio transport 启动 MCP Server（供 main.py 调用）。
 
-    db_path      → 指定要加载的数据库路径（由 --project 参数推导而来）
-    project_name → 项目名称，用于日志和工具描述
+    db_path          → 指定要加载的数据库路径（由 --project 参数推导而来）
+    project_name     → 项目名称，用于日志和工具描述
+    watch_root       → 若不为 None，则在后台启动 ProjectWatcher 自动更新索引
+    debounce_seconds → 文件监听的 debounce 秒数
     """
     global _engine, _project_name
     if db_path:
         _engine = QueryEngine(db_path=db_path)
         _project_name = project_name
+
+    # 后台文件监听
+    _watcher = None
+    if watch_root is not None:
+        import logging
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+        from src.indexer import Indexer
+        from src.watcher import ProjectWatcher
+
+        _indexer = Indexer(db_path=db_path)
+
+        def _reload_engine() -> None:
+            global _engine
+            _engine = QueryEngine(db_path=db_path)
+
+        _watcher = ProjectWatcher(
+            project_root=watch_root,
+            indexer=_indexer,
+            debounce_seconds=debounce_seconds,
+            on_updated=_reload_engine,
+            verbose=True,
+        )
+        _watcher.start()
 
     import asyncio
 
@@ -532,4 +562,8 @@ def run_mcp_server(db_path: Path | None = None, project_name: str = "unknown") -
                 server.create_initialization_options(),
             )
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        if _watcher is not None:
+            _watcher.stop()
