@@ -109,14 +109,14 @@ pip install -r requirements.txt
 
 ```bash
 # 全量索引（首次使用）
-python main.py index full /path/to/your/android/project
+python main.py index full /path/to/your/android/project_name
 
 # 增量更新索引
-python main.py index update /path/to/your/android/project
+python main.py index update /path/to/your/android/project_name
 
 # 监听文件变化，自动更新索引（前台运行，Ctrl-C 停止）
-python main.py index watch /path/to/your/android/project
-python main.py index watch /path/to/your/android/project --debounce 5
+python main.py index watch /path/to/your/android/project_name
+python main.py index watch /path/to/your/android/project_name --debounce 5
 ```
 
 数据库路径规则：`~/.android-code-index/{项目名}/index.db`
@@ -130,11 +130,8 @@ python main.py serve mcp
 # 启动 MCP Server（带后台文件监听，自动更新索引）
 python main.py serve mcp --watch
 
-# 启动 HTTP API 服务
-python main.py serve http --port 8000
-
 # 指定项目启动 HTTP API
-python main.py serve http --project my-android-project
+python main.py serve http --project project_name
 ```
 
 ### 查看统计
@@ -144,11 +141,26 @@ python main.py serve http --project my-android-project
 python main.py stats
 
 # 指定项目
-python main.py stats --project my-android-project
+python main.py stats --project project_name
 
 # 列出所有已索引的项目
 python main.py projects
 ```
+
+
+### 查看前端UI
+
+```bash
+# 新建终端
+cd ui
+
+# 安装依赖（首次运行）
+npm install
+
+# 启动 UI
+npm run dev
+```
+
 
 ## 命令行接口 (CLI)
 
@@ -165,7 +177,7 @@ python main.py projects
 | 命令 | 说明 | 示例 |
 |------|------|------|
 | `serve mcp` | 启动 MCP Server | `main.py serve mcp --watch` |
-| `serve http` | 启动 HTTP API | `main.py serve http --port 8000` |
+| `serve http` | 启动 HTTP API | `main.py serve http --project xxx --port 8000` |
 
 ### 其他命令
 
@@ -266,59 +278,15 @@ curl "http://localhost:8000/modules/:compfeed/dependencies"
 
 ### 在 Claude Code 中注册 MCP Server
 
-#### 方法 1：临时启动（当前会话）
-
-```bash
-# 在项目目录下执行
-cd /path/to/android-project
-python /path/to/android-code-index/main.py serve mcp
 ```
 
-然后在另一个终端启动 Claude Code：
+claude mcp add gl-code-index \
+  -- /Users/dodge/Documents/android-code-index/.venv/bin/python3.11 \
+     /Users/dodge/Documents/android-code-index/main.py \
+     serve mcp --watch
 
-```bash
-claude
 ```
 
-#### 方法 2：在 Claude Code 中配置 MCP Server
-
-编辑 `~/.claude/settings.json`，添加 MCP 服务器配置：
-
-```json
-{
-  "mcpServers": {
-    "android-index": {
-      "command": "python",
-      "args": [
-        "/path/to/android-code-index/main.py",
-        "serve",
-        "mcp"
-      ],
-      "cwd": "/path/to/android-project"
-    }
-  }
-}
-```
-
-#### 方法 3：在项目内配置（推荐团队使用）
-
-在项目根目录创建 `.claude/settings.json`：
-
-```json
-{
-  "mcpServers": {
-    "android-index": {
-      "command": "python",
-      "args": [
-        "/path/to/android-code-index/main.py",
-        "serve",
-        "mcp"
-      ],
-      "cwd": "$workspaceFolder"
-    }
-  }
-}
-```
 
 ### MCP 工具列表
 

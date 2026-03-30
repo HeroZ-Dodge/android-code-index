@@ -34,3 +34,4 @@ specs/
 
 # CodeMaker local config (keep local, not in remote)
 .claude/
+doc
