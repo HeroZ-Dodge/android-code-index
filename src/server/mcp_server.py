@@ -26,6 +26,40 @@ def _json(obj: Any) -> str:
 
 
 # ──────────────────────────────────────────────
+# MCP 层字段过滤（不影响 HTTP API）
+# ──────────────────────────────────────────────
+
+# 搜索/列表类接口返回字段（P0 级精简）
+# 剔除 id, line_number, source_set 等对搜索场景低价值的字段
+_MCP_SEARCH_FIELDS = {
+    "name", "qualified_name", "kind", "module",
+    "file_path", "visibility", "parent_class",
+    "interfaces", "annotations",
+}
+
+# 文件级/详情类接口返回字段（P3 级精简）
+# 保留 line_number 用于文件内定位，剔除 source_set 等低价值字段
+_MCP_DETAIL_FIELDS = {
+    "id", "name", "qualified_name", "kind", "module",
+    "file_path", "line_number", "visibility", "parent_class",
+    "interfaces", "annotations",
+    "return_type", "parameters", "signature", "is_abstract", "is_override",
+}
+
+# 类成员摘要返回字段（P2 级精简）- function/property 共用
+_MCP_MEMBER_FIELDS = {
+    "id", "name", "kind", "visibility",
+    "return_type", "parameters", "annotations", "line_number",
+}
+
+
+def _filter_items(items: list[dict], allowed_fields: set[str]) -> list[dict]:
+    """过滤掉非允许字段和 null 值"""
+    return [{k: v for k, v in item.items() if k in allowed_fields and v is not None}
+            for item in items]
+
+
+# ──────────────────────────────────────────────
 # 创建 MCP Server
 # ──────────────────────────────────────────────
 
@@ -381,8 +415,7 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "【推荐】返回类的成员摘要列表（不含源码），token 消耗约为 get_class_api_full 的 1/10。\n"
                 "\n"
-                "返回字段：id、name、kind、visibility、is_abstract、is_override、"
-                "return_type、parameters、signature、annotations、line_number（null 值自动过滤）。\n"
+                "返回字段：id, name, kind, visibility, return_type, parameters, annotations, line_number（null 值自动过滤）。\n"
                 "\n"
                 "include_private（默认 false）：\n"
                 "  false → 只返回 public / protected / internal 成员\n"
@@ -606,17 +639,27 @@ async def call_tool(
     result: Any
 
     if name == "search_code":
-        result = engine.search_code(**arguments)
+        raw_result = engine.search_code(**arguments)
+        raw_result["items"] = _filter_items(raw_result["items"], _MCP_SEARCH_FIELDS)
+        result = raw_result
     elif name == "search_resource":
-        result = engine.search_resource(**arguments)
+        raw_result = engine.search_resource(**arguments)
+        raw_result["items"] = _filter_items(raw_result["items"], _MCP_SEARCH_FIELDS)
+        result = raw_result
     elif name == "search_class":
-        result = engine.search_class(**arguments)
+        raw_result = engine.search_class(**arguments)
+        raw_result["items"] = _filter_items(raw_result["items"], _MCP_SEARCH_FIELDS)
+        result = raw_result
     elif name == "search_function":
-        result = engine.search_function(**arguments)
+        raw_result = engine.search_function(**arguments)
+        raw_result["items"] = _filter_items(raw_result["items"], _MCP_SEARCH_FIELDS)
+        result = raw_result
     elif name == "search_interface":
-        result = engine.search_interface(**arguments)
+        raw_result = engine.search_interface(**arguments)
+        raw_result["items"] = _filter_items(raw_result["items"], _MCP_SEARCH_FIELDS)
+        result = raw_result
     elif name == "get_file_symbols":
-        result = engine.get_file_symbols(**arguments)
+        result = _filter_items(engine.get_file_symbols(**arguments), _MCP_DETAIL_FIELDS)
     elif name == "get_file_imports":
         result = engine.get_file_imports(**arguments)
     elif name == "get_module_overview":
@@ -624,27 +667,47 @@ async def call_tool(
     elif name == "get_inheritance":
         result = engine.get_inheritance(**arguments)
     elif name == "get_subclasses":
-        result = engine.get_subclasses(**arguments)
+        raw_result = engine.get_subclasses(**arguments)
+        if isinstance(raw_result, list):
+            result = _filter_items(raw_result, _MCP_SEARCH_FIELDS)
+        else:
+            result = raw_result  # error 情况原样返回
     elif name == "get_class_interfaces":
         result = engine.get_class_interfaces(**arguments)
     elif name == "get_implementations":
-        result = engine.get_implementations(**arguments)
+        raw_result = engine.get_implementations(**arguments)
+        if isinstance(raw_result, list):
+            result = _filter_items(raw_result, _MCP_SEARCH_FIELDS)
+        else:
+            result = raw_result  # error 情况原样返回
     elif name == "get_class_api":
-        result = engine.get_class_api(**arguments)
+        raw_result = engine.get_class_api(**arguments)
+        if isinstance(raw_result, list):
+            result = _filter_items(raw_result, _MCP_MEMBER_FIELDS)
+        else:
+            result = raw_result  # error 情况原样返回
     elif name == "get_class_api_full":
         result = engine.get_class_api_full(**arguments)
     elif name == "get_symbol_source":
         result = engine.get_symbol_source(**arguments)
     elif name == "find_layout":
-        result = engine.find_layout(**arguments)
+        raw_result = engine.find_layout(**arguments)
+        raw_result["items"] = _filter_items(raw_result["items"], _MCP_DETAIL_FIELDS)
+        result = raw_result
     elif name == "find_drawable":
-        result = engine.find_drawable(**arguments)
+        raw_result = engine.find_drawable(**arguments)
+        raw_result["items"] = _filter_items(raw_result["items"], _MCP_DETAIL_FIELDS)
+        result = raw_result
     elif name == "find_manifest_component":
-        result = engine.find_manifest_component(**arguments)
+        raw_result = engine.find_manifest_component(**arguments)
+        raw_result["items"] = _filter_items(raw_result["items"], _MCP_DETAIL_FIELDS)
+        result = raw_result
+    elif name == "find_style":
+        raw_result = engine.find_style(**arguments)
+        raw_result["items"] = _filter_items(raw_result["items"], _MCP_DETAIL_FIELDS)
+        result = raw_result
     elif name == "find_module_deps":
         result = engine.find_module_deps(**arguments)
-    elif name == "find_style":
-        result = engine.find_style(**arguments)
     elif name == "project_stats":
         result = engine.project_stats()
     elif name == "update_index":
