@@ -698,6 +698,69 @@ class QueryEngine:
         items = [_row_to_dict(r) for r in rows]
         return {"total": total, "items": items}
 
+    def get_class_interfaces(self, class_name: str) -> list[dict] | dict:
+        """返回指定类（含其所有祖先类）实现的全部接口。
+
+        沿继承链逐层向上查找，汇总每一层的 interfaces 字段（JSON 数组）。
+        返回格式：
+          [
+            {"class": "FavoFeedEntity", "qualified_name": "...", "interfaces": []},
+            {"class": "FeedEntity",     "qualified_name": "...", "interfaces": ["Parcelable", ...]},
+            ...
+          ]
+        只包含本身有 interfaces 数据的层，且去掉重复接口（all_interfaces 汇总）。
+        若 name 有歧义，返回 {"error": "ambiguous", "candidates": [...]}。
+        """
+        resolved = self._resolve_class(class_name)
+        if resolved is None:
+            return []
+        if resolved.get("__ambiguous__"):
+            return {"error": "ambiguous", "candidates": resolved["candidates"]}
+
+        per_class: list[dict] = []
+        all_interfaces: list[str] = []
+        seen_interfaces: set[str] = set()
+        visited: set[str] = set()
+
+        current = resolved
+        while current:
+            qn = current.get("qualified_name", "")
+            if qn in visited:
+                break
+            visited.add(qn)
+
+            raw = current.get("interfaces")
+            ifaces: list[str] = []
+            if raw:
+                try:
+                    ifaces = json.loads(raw) if isinstance(raw, str) else list(raw)
+                except (json.JSONDecodeError, TypeError):
+                    ifaces = []
+
+            if ifaces:
+                per_class.append({
+                    "class": current.get("name", qn),
+                    "qualified_name": qn,
+                    "interfaces": ifaces,
+                })
+                for iface in ifaces:
+                    if iface not in seen_interfaces:
+                        seen_interfaces.add(iface)
+                        all_interfaces.append(iface)
+
+            # 向上追溯
+            parent_qn = current.get("parent_class")
+            if not parent_qn:
+                break
+            row = self.conn.execute(
+                "SELECT * FROM symbols WHERE qualified_name = ? "
+                "AND kind IN ('class','interface','object') LIMIT 1",
+                (parent_qn,),
+            ).fetchone()
+            current = _row_to_dict(row) if row else None
+
+        return {"all_interfaces": all_interfaces, "per_class": per_class}
+
     # ──────────────────────────────────────────────
     # 批次 3 (P2) 方法
     # ──────────────────────────────────────────────
@@ -709,11 +772,15 @@ class QueryEngine:
         syntax: str | None = None,
     ) -> dict[str, Any]:
         """
-        查询模块的直接依赖和间接依赖。
+        查询模块的直接依赖关系（仅模块间依赖，排除外部 aar/jar）。
 
-        使用递归 CTE（SQLite >= 3.8.3）；版本过低时降级为 Python BFS。
+        结果按层级区分：
+          sdk_deps  → SDK 层依赖（来自 gradlescript/component.gradle，接口间依赖）
+          impl_deps → Impl 层依赖（来自模块自身 build.gradle，实现代码依赖）
+
+        只返回直接依赖（flat list），不递归展开依赖树，避免大数据量问题。
         """
-        filters = ["module = ?"]
+        filters = ["module = ?", "dependency_type = 'module'"]
         params: list[Any] = [module]
 
         if scope:
@@ -725,60 +792,32 @@ class QueryEngine:
 
         where = " AND ".join(filters)
 
-        # 直接依赖
         direct_rows = self.conn.execute(
-            f"SELECT * FROM module_dependencies WHERE {where}",
+            "SELECT depends_on, syntax, dependency_scope, source_file, layer "
+            f"FROM module_dependencies WHERE {where}",
             params,
         ).fetchall()
-        direct = [_row_to_dict(r) for r in direct_rows]
 
-        # 间接依赖：尝试递归 CTE
-        indirect: list[dict] = []
-        try:
-            cte_sql = f"""
-                WITH RECURSIVE deps(depends_on, depth) AS (
-                    SELECT depends_on, 1
-                    FROM module_dependencies
-                    WHERE {where}
-                    UNION
-                    SELECT md.depends_on, deps.depth + 1
-                    FROM module_dependencies md
-                    JOIN deps ON md.module = deps.depends_on
-                    WHERE deps.depth < 10
-                )
-                SELECT DISTINCT depends_on, depth FROM deps
-                ORDER BY depth
-            """
-            indirect_rows = self.conn.execute(cte_sql, params).fetchall()
-            # 排除直接依赖
-            direct_names = {r["depends_on"] for r in direct_rows}
-            indirect = [
-                {"depends_on": r["depends_on"], "depth": r["depth"]}
-                for r in indirect_rows
-                if r["depends_on"] not in direct_names
-            ]
-        except sqlite3.OperationalError:
-            # 降级为 Python BFS + set
-            visited: set[str] = {r["depends_on"] for r in direct_rows}
-            queue = list(visited)
-            depth = 2
-            while queue and depth <= 10:
-                next_queue = []
-                for dep in queue:
-                    rows = self.conn.execute(
-                        "SELECT depends_on FROM module_dependencies WHERE module = ?",
-                        (dep,),
-                    ).fetchall()
-                    for r in rows:
-                        name = r["depends_on"]
-                        if name not in visited:
-                            visited.add(name)
-                            next_queue.append(name)
-                            indirect.append({"depends_on": name, "depth": depth})
-                queue = next_queue
-                depth += 1
+        sdk_deps: list[dict] = []
+        impl_deps: list[dict] = []
 
-        return {"direct": direct, "indirect": indirect}
+        for r in direct_rows:
+            # layer 字段存在则直接用，否则回退到 source_file 路径判断（旧数据兼容）
+            layer = r["layer"]
+            if layer is None:
+                layer = "sdk" if (r["source_file"] or "").endswith("component.gradle") else "impl"
+
+            entry = {
+                "depends_on": r["depends_on"],
+                "syntax": r["syntax"],
+                "scope": r["dependency_scope"],
+            }
+            if layer == "sdk":
+                sdk_deps.append(entry)
+            else:
+                impl_deps.append(entry)
+
+        return {"sdk_deps": sdk_deps, "impl_deps": impl_deps}
 
     def find_style(
         self,

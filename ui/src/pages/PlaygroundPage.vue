@@ -17,7 +17,7 @@ const endpointGroups = [
       { label: 'GET /search/code', path: '/search/code', params: [
         { name: 'keyword', type: 'string', required: true, placeholder: '如 FeedFragment' },
         { name: 'kind', type: 'string', required: false, placeholder: 'class | interface | function | property | object' },
-        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 compfeed' },
         { name: 'use_tokens', type: 'string', required: false, placeholder: 'true | false' },
         { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
         { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
@@ -25,7 +25,7 @@ const endpointGroups = [
       { label: 'GET /search/resource', path: '/search/resource', params: [
         { name: 'keyword', type: 'string', required: true, placeholder: '如 feed_item' },
         { name: 'kind', type: 'string', required: false, placeholder: 'layout | style | drawable | manifest_component' },
-        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 compfeed' },
         { name: 'use_tokens', type: 'string', required: false, placeholder: 'true | false' },
         { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
         { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
@@ -37,7 +37,7 @@ const endpointGroups = [
     items: [
       { label: 'GET /symbols/search/class', path: '/symbols/search/class', params: [
         { name: 'name', type: 'string', required: false, placeholder: '如 FeedFragment' },
-        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 compfeed' },
         { name: 'parent_class', type: 'string', required: false, placeholder: '如 BaseFragment' },
         { name: 'annotation', type: 'string', required: false, placeholder: '如 HiltViewModel' },
         { name: 'source_set', type: 'string', required: false, placeholder: 'sdk | impl' },
@@ -46,7 +46,7 @@ const endpointGroups = [
       ]},
       { label: 'GET /symbols/search/function', path: '/symbols/search/function', params: [
         { name: 'name', type: 'string', required: false, placeholder: '如 onCreate' },
-        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 compfeed' },
         { name: 'return_type', type: 'string', required: false, placeholder: '如 Boolean' },
         { name: 'visibility', type: 'string', required: false, placeholder: 'public | private | protected | internal' },
         { name: 'annotation', type: 'string', required: false, placeholder: '如 Override' },
@@ -56,7 +56,7 @@ const endpointGroups = [
       ]},
       { label: 'GET /symbols/search/interface', path: '/symbols/search/interface', params: [
         { name: 'name', type: 'string', required: false, placeholder: '如 IFeedService' },
-        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 compfeed' },
         { name: 'source_set', type: 'string', required: false, placeholder: 'sdk | impl' },
         { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
         { name: 'offset', type: 'number', required: false, placeholder: '默认 0' },
@@ -72,6 +72,9 @@ const endpointGroups = [
   {
     group: '类关系',
     items: [
+      { label: 'GET /classes/{class_name}/interfaces', path: '/classes/{class_name}/interfaces', params: [
+        { name: 'class_name', type: 'string', required: true, placeholder: '如 FavoFeedEntity' },
+      ]},
       { label: 'GET /classes/{class_name}/inheritance', path: '/classes/{class_name}/inheritance', params: [
         { name: 'class_name', type: 'string', required: true, placeholder: '如 FeedFragment' },
       ]},
@@ -82,7 +85,7 @@ const endpointGroups = [
       ]},
       { label: 'GET /interfaces/{interface_name}/implementations', path: '/interfaces/{interface_name}/implementations', params: [
         { name: 'interface_name', type: 'string', required: true, placeholder: '如 IFeedService' },
-        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 compfeed' },
         { name: 'limit', type: 'number', required: false, placeholder: '默认 50' },
       ]},
       { label: 'GET /classes/{class_name}/api', path: '/classes/{class_name}/api', params: [
@@ -103,14 +106,14 @@ const endpointGroups = [
     items: [
       { label: 'GET /modules', path: '/modules', params: [] },
       { label: 'GET /modules/{module}/overview', path: '/modules/{module}/overview', params: [
-        { name: 'module', type: 'string', required: true, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: true, placeholder: '如 compfeed' },
       ]},
       { label: 'GET /modules/{module}/files', path: '/modules/{module}/files', params: [
-        { name: 'module', type: 'string', required: true, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: true, placeholder: '如 compfeed' },
         { name: 'source_set', type: 'string', required: false, placeholder: 'sdk | impl' },
       ]},
       { label: 'GET /modules/{module}/dependencies', path: '/modules/{module}/dependencies', params: [
-        { name: 'module', type: 'string', required: true, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: true, placeholder: '如 compfeed' },
         { name: 'scope', type: 'string', required: false, placeholder: 'api | implementation | …' },
         { name: 'syntax', type: 'string', required: false, placeholder: 'component | project' },
       ]},
@@ -121,23 +124,23 @@ const endpointGroups = [
     items: [
       { label: 'GET /resources/layouts', path: '/resources/layouts', params: [
         { name: 'name', type: 'string', required: false, placeholder: '如 fragment_feed' },
-        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 compfeed' },
         { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
       ]},
       { label: 'GET /resources/styles', path: '/resources/styles', params: [
         { name: 'name', type: 'string', required: false, placeholder: '如 AppTheme' },
-        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 compfeed' },
         { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
       ]},
       { label: 'GET /resources/drawables', path: '/resources/drawables', params: [
         { name: 'name', type: 'string', required: false, placeholder: '如 ic_feed' },
-        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 compfeed' },
         { name: 'limit', type: 'number', required: false, placeholder: '默认 50' },
       ]},
       { label: 'GET /manifest/components', path: '/manifest/components', params: [
         { name: 'name', type: 'string', required: false, placeholder: '如 FeedActivity' },
         { name: 'component_type', type: 'string', required: false, placeholder: 'activity | service | receiver | provider' },
-        { name: 'module', type: 'string', required: false, placeholder: '如 :compfeed' },
+        { name: 'module', type: 'string', required: false, placeholder: '如 compfeed' },
         { name: 'limit', type: 'number', required: false, placeholder: '默认 20' },
       ]},
     ],

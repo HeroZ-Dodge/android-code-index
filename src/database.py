@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 # 当前代码期望的 schema 版本
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 1
 
 # ──────────────────────────────────────────────
 # DDL 语句
@@ -86,11 +86,13 @@ CREATE TABLE IF NOT EXISTS module_dependencies (
     syntax           TEXT NOT NULL,
     raw_declaration  TEXT NOT NULL,
     source_file      TEXT NOT NULL,
+    layer            TEXT,
     UNIQUE(module, depends_on, dependency_scope, syntax)
 );
 CREATE INDEX IF NOT EXISTS idx_moddep_module     ON module_dependencies(module);
 CREATE INDEX IF NOT EXISTS idx_moddep_depends_on ON module_dependencies(depends_on);
 CREATE INDEX IF NOT EXISTS idx_moddep_syntax     ON module_dependencies(syntax);
+CREATE INDEX IF NOT EXISTS idx_moddep_layer      ON module_dependencies(layer);
 """
 
 _CREATE_FTS = """
@@ -145,16 +147,10 @@ CREATE TABLE IF NOT EXISTS schema_version (
 # 迁移脚本（版本 N → N+1 的 SQL 列表）
 # 新增 schema 变更时在此追加
 # ──────────────────────────────────────────────
-_MIGRATIONS: dict[int, list[str]] = {
-    # 示例：
-    # 2: ["ALTER TABLE symbols ADD COLUMN foo TEXT"],
-}
+_MIGRATIONS: dict[int, list[str]] = {}
 
 # 版本迁移后置钩子（需要 Python 逻辑的迁移步骤）
-_MIGRATION_HOOKS: dict[int, Callable[[sqlite3.Connection], None]] = {
-    # 示例：
-    # 2: lambda conn: _some_backfill(conn),
-}
+_MIGRATION_HOOKS: dict[int, Callable[[sqlite3.Connection], None]] = {}
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:

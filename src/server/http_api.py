@@ -198,6 +198,11 @@ def get_implementations(
                                              module=module, limit=limit)
 
 
+@app.get("/classes/{class_name}/interfaces")
+def get_class_interfaces(class_name: str) -> Any:
+    return _get_engine().get_class_interfaces(class_name)
+
+
 @app.get("/classes/{class_name}/api")
 def get_class_api(
     class_name: str,

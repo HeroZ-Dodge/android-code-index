@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { getInheritance, getSubclasses, getImplementations, getClassApi, getSymbolSource } from '@/api/symbols'
+import { getInheritance, getSubclasses, getImplementations, getClassApi, getSymbolSource, getClassInterfaces } from '@/api/symbols'
 import type { Symbol } from '@/types'
+import type { ClassInterfaces } from '@/api/symbols'
 
 export const useDrawerStore = defineStore('drawer', () => {
   const visible = ref(false)
@@ -10,6 +11,7 @@ export const useDrawerStore = defineStore('drawer', () => {
   const subclasses = ref<Symbol[]>([])
   const implementations = ref<Symbol[]>([])
   const members = ref<Symbol[]>([])
+  const classInterfaces = ref<ClassInterfaces | null>(null)
   const loading = ref(false)
 
   // 按需加载的成员源码缓存：member.id -> src_code
@@ -23,6 +25,7 @@ export const useDrawerStore = defineStore('drawer', () => {
     subclasses.value = []
     implementations.value = []
     members.value = []
+    classInterfaces.value = null
     memberSrcCache.value = {}
     memberSrcLoading.value = new Set()
     loading.value = true
@@ -30,6 +33,9 @@ export const useDrawerStore = defineStore('drawer', () => {
     const tasks: Promise<void>[] = []
 
     if (s.kind === 'class' || s.kind === 'object') {
+      tasks.push(
+        getClassInterfaces(s.qualified_name).then((v) => { classInterfaces.value = v }).catch(() => {})
+      )
       tasks.push(
         getInheritance(s.qualified_name).then((v) => { inheritanceChain.value = v }).catch(() => {})
       )
@@ -75,7 +81,7 @@ export const useDrawerStore = defineStore('drawer', () => {
 
   return {
     visible, symbol,
-    inheritanceChain, subclasses, implementations, members,
+    inheritanceChain, subclasses, implementations, members, classInterfaces,
     memberSrcCache, memberSrcLoading,
     loading,
     open, close, loadMemberSource,

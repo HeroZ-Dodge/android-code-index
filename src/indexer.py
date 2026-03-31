@@ -75,9 +75,9 @@ VALUES (:file_path, :import_fqn)
 
 _INSERT_DEP = """
 INSERT OR IGNORE INTO module_dependencies
-    (module, depends_on, dependency_type, dependency_scope, syntax, raw_declaration, source_file)
+    (module, depends_on, dependency_type, dependency_scope, syntax, raw_declaration, source_file, layer)
 VALUES
-    (:module, :depends_on, :dependency_type, :dependency_scope, :syntax, :raw_declaration, :source_file)
+    (:module, :depends_on, :dependency_type, :dependency_scope, :syntax, :raw_declaration, :source_file, :layer)
 """
 
 _INSERT_FILE = """

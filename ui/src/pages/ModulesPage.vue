@@ -28,29 +28,24 @@ const filteredModules = computed(() =>
 )
 
 async function selectMod(mod: string) {
-  // 切换模块时清空已展开的文件
+  // 切换模块时清空展开状态（用新对象替换，单次响应式更新）
   Object.keys(expandedFiles).forEach(k => delete expandedFiles[k])
   Object.keys(fileError).forEach(k => delete fileError[k])
   Object.keys(loadingFiles).forEach(k => delete loadingFiles[k])
   Object.keys(collapsedDirs).forEach(k => delete collapsedDirs[k])
-  await store.selectModule(mod)
+  depsTabActivated.value = false
+  activeTab.value = 'files'
+  await store.selectModuleFiles(mod)
   router.replace({ path: `/modules/${encodeURIComponent(mod)}` })
 }
 
-// 文件树：每个文件的展开符号
-// 全部使用 shallowReactive 替代 ref<Record>：对某个 key 的修改只触发
-// 依赖该 key 的那一行 vnode diff，不会让目录内所有行都重新 patch
+// 文件树状态
 const expandedFiles = shallowReactive<Record<string, Symbol[]>>({})
-// loadingFiles 用 Record<path, true> 替代 ref<string|null>，避免
-// 点击一个文件时让目录内其余所有行都进行 diff
 const loadingFiles = shallowReactive<Record<string, boolean>>({})
 const fileError = shallowReactive<Record<string, string>>({})
-
-// 目录折叠状态：默认全部折叠，减少初始 DOM 数量
 const collapsedDirs = shallowReactive<Record<string, boolean>>({})
 
 function isDirCollapsed(dirPath: string): boolean {
-  // 未设置时默认折叠
   return collapsedDirs[dirPath] !== false
 }
 
@@ -68,7 +63,6 @@ async function toggleFile(file: ModuleFile) {
   loadingFiles[key] = true
   delete fileError[key]
   try {
-    // 去掉开头 / 以匹配路由路径格式，并进行 URL 编码
     const encodedPath = encodeURIComponent(file.file_path.replace(/^\//, ''))
     const symbols = await getFileSymbols(encodedPath)
     expandedFiles[key] = symbols
@@ -84,6 +78,16 @@ async function toggleFile(file: ModuleFile) {
 }
 
 const activeTab = ref('files')
+// 依赖 Tab 是否已激活过（懒加载：首次切过去才请求）
+const depsTabActivated = ref(false)
+
+async function onTabChange(tab: string) {
+  activeTab.value = tab
+  if (tab === 'deps' && !depsTabActivated.value && store.selectedModule) {
+    depsTabActivated.value = true
+    await store.loadDeps(store.selectedModule)
+  }
+}
 
 const overview = computed(() =>
   store.selectedModule ? store.overviewCache[store.selectedModule] : null
@@ -95,8 +99,13 @@ const files = computed(() =>
   store.selectedModule ? store.filesCache[store.selectedModule] : null
 )
 
-const depSyntaxType = (syntax: string) =>
-  syntax === 'component' ? 'primary' : syntax === 'project' ? 'warning' : 'info'
+const statsCards = computed(() => [
+  { label: '文件数', value: overview.value?.files },
+  { label: 'SDK 类', value: overview.value?.sdk_classes },
+  { label: 'impl 类', value: overview.value?.impl_classes },
+  { label: '接口', value: overview.value?.interfaces },
+  { label: '函数', value: overview.value?.functions },
+])
 </script>
 
 <template>
@@ -123,7 +132,7 @@ const depSyntaxType = (syntax: string) =>
                   background: store.selectedModule === m.module ? '#eef2ff' : '',
                   border: store.selectedModule === m.module ? '1px solid #c7d2fe' : '1px solid transparent',
                 }"
-                style="padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; transition: all 0.15s"
+                style="padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; transition: background 0.15s, border-color 0.15s"
               >
                 <div style="font-weight: 600; font-size: 13px; color: #2d3561; word-break: break-all">{{ m.module }}</div>
                 <div style="font-size: 12px; color: #6b7280; margin-top: 2px">
@@ -145,13 +154,7 @@ const depSyntaxType = (syntax: string) =>
       <template v-else>
         <!-- 统计卡片 -->
         <el-row :gutter="12" style="margin-bottom: 16px">
-          <el-col :span="4" v-for="card in [
-            { label: '文件数', value: overview?.files },
-            { label: 'SDK 类', value: overview?.sdk_classes },
-            { label: 'impl 类', value: overview?.impl_classes },
-            { label: '接口', value: overview?.interfaces },
-            { label: '函数', value: overview?.functions },
-          ]" :key="card.label">
+          <el-col :span="4" v-for="card in statsCards" :key="card.label">
             <el-card shadow="never" body-style="padding: 12px; text-align: center">
               <div style="font-size: 22px; font-weight: 700; color: #2d3561">{{ card.value ?? '—' }}</div>
               <div style="font-size: 12px; color: #6b7280">{{ card.label }}</div>
@@ -161,7 +164,7 @@ const depSyntaxType = (syntax: string) =>
 
         <!-- Tab 区域 -->
         <el-card shadow="never">
-          <el-tabs v-model="activeTab">
+          <el-tabs v-model="activeTab" @tab-change="onTabChange">
             <!-- 文件树 Tab -->
             <el-tab-pane label="文件树" name="files">
               <div v-if="!files" style="color: #9ca3af; text-align: center; padding: 24px">加载中...</div>
@@ -232,31 +235,67 @@ const depSyntaxType = (syntax: string) =>
               </template>
             </el-tab-pane>
 
-            <!-- 依赖 Tab -->
+            <!-- 依赖 Tab：首次切换时才请求数据（depsTabActivated 控制） -->
             <el-tab-pane label="依赖" name="deps">
               <div v-if="!deps" style="color: #9ca3af; text-align: center; padding: 24px">加载中...</div>
+              <template v-else-if="!deps.sdk_deps || !deps.impl_deps">
+                <!-- 旧格式缓存或数据异常，引导刷新 -->
+                <el-empty description="依赖数据格式已更新，请重新选择模块" :image-size="80" />
+              </template>
               <template v-else>
-                <div style="margin-bottom: 16px">
-                  <div style="font-weight: 600; margin-bottom: 8px">直接依赖（{{ deps.direct.length }}）</div>
-                  <el-table :data="deps.direct" size="small" stripe>
-                    <el-table-column prop="depends_on" label="依赖模块" />
-                    <el-table-column label="类型" width="120">
-                      <template #default="{ row }">
-                        <el-tag :type="depSyntaxType(row.syntax)" size="small">{{ row.syntax }}</el-tag>
-                      </template>
-                    </el-table-column>
-                    <el-table-column prop="dependency_scope" label="scope" width="140" />
-                  </el-table>
+                <!-- 实现层依赖（Android 开发最常关注）-->
+                <div style="margin-bottom: 20px">
+                  <div style="font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px">
+                    <span>实现层依赖</span>
+                    <el-tag size="small" type="info">{{ deps.impl_deps.length }}</el-tag>
+                    <span style="font-size: 11px; color: #9ca3af; font-weight: 400">来自 build.gradle</span>
+                    <el-tag
+                      v-if="deps.impl_deps.some(d => d.syntax === 'project')"
+                      size="small" type="warning"
+                    >⚠️ 含 project() 依赖</el-tag>
+                  </div>
+                  <div v-if="!deps.impl_deps.length" style="color: #9ca3af; font-size: 13px; padding: 4px 0">无</div>
+                  <div v-else style="display: flex; flex-wrap: wrap; gap: 6px">
+                    <div
+                      v-for="d in deps.impl_deps"
+                      :key="d.depends_on"
+                      :style="{
+                        display: 'flex', alignItems: 'center', gap: '4px',
+                        padding: '4px 10px', borderRadius: '6px', fontSize: '13px',
+                        background: d.syntax === 'project' ? '#fffbeb' : '#f0fdf4',
+                        border: d.syntax === 'project' ? '1px solid #fcd34d' : '1px solid #bbf7d0',
+                      }"
+                    >
+                      <span :style="{ fontWeight: 500, color: d.syntax === 'project' ? '#92400e' : '#166534' }">
+                        {{ d.depends_on }}
+                      </span>
+                      <el-tag size="small" :type="d.syntax === 'component' ? 'success' : 'warning'" style="font-size: 10px">
+                        {{ d.syntax }}
+                      </el-tag>
+                      <span style="font-size: 11px; color: #6b7280">{{ d.scope }}</span>
+                    </div>
+                  </div>
                 </div>
-                <div v-if="deps.indirect.length">
-                  <el-collapse>
-                    <el-collapse-item :title="`间接依赖（${deps.indirect.length}）`" name="indirect">
-                      <el-table :data="deps.indirect" size="small" stripe>
-                        <el-table-column prop="depends_on" label="模块" />
-                        <el-table-column prop="depth" label="深度" width="80" />
-                      </el-table>
-                    </el-collapse-item>
-                  </el-collapse>
+
+                <!-- 接口层依赖（SDK 接口对外声明的依赖，来自 component.gradle）-->
+                <div>
+                  <div style="font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px">
+                    <span>接口层依赖</span>
+                    <el-tag size="small" type="primary">{{ deps.sdk_deps.length }}</el-tag>
+                    <span style="font-size: 11px; color: #9ca3af; font-weight: 400">来自 component.gradle</span>
+                  </div>
+                  <div v-if="!deps.sdk_deps.length" style="color: #9ca3af; font-size: 13px; padding: 4px 0">无</div>
+                  <div v-else style="display: flex; flex-wrap: wrap; gap: 6px">
+                    <div
+                      v-for="d in deps.sdk_deps"
+                      :key="d.depends_on"
+                      style="display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; background: #eff6ff; border: 1px solid #bfdbfe; font-size: 13px"
+                    >
+                      <span style="font-weight: 500; color: #1d4ed8">{{ d.depends_on }}</span>
+                      <el-tag size="small" type="primary" style="font-size: 10px">component</el-tag>
+                      <span style="font-size: 11px; color: #6b7280">{{ d.scope }}</span>
+                    </div>
+                  </div>
                 </div>
               </template>
             </el-tab-pane>

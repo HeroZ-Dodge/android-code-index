@@ -82,6 +82,34 @@ function copyToClipboard(text: string) {
             </el-breadcrumb>
           </template>
 
+          <!-- 接口实现 (class/object) -->
+          <template v-if="(s.kind === 'class' || s.kind === 'object') && store.classInterfaces && store.classInterfaces.all_interfaces.length">
+            <div style="margin-bottom: 8px; font-weight: 600; color: #374151">
+              实现接口（{{ store.classInterfaces.all_interfaces.length }}）
+            </div>
+            <div style="margin-bottom: 20px">
+              <!-- 按来源分组展示 -->
+              <div
+                v-for="entry in store.classInterfaces.per_class"
+                :key="entry.qualified_name"
+                style="margin-bottom: 10px"
+              >
+                <div style="font-size: 11px; color: #9ca3af; margin-bottom: 4px">
+                  {{ entry.class === s.name ? '自身实现' : `继承自 ${entry.class}` }}
+                </div>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px">
+                  <el-tag
+                    v-for="iface in entry.interfaces"
+                    :key="iface"
+                    type="warning"
+                    size="small"
+                    style="font-family: monospace; font-size: 11px"
+                  >{{ iface }}</el-tag>
+                </div>
+              </div>
+            </div>
+          </template>
+
           <!-- 子类 (class) -->
           <template v-if="(s.kind === 'class' || s.kind === 'object') && store.subclasses.length">
             <div style="margin-bottom: 8px; font-weight: 600; color: #374151">子类（{{ store.subclasses.length }}）</div>

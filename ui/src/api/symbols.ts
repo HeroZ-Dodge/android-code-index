@@ -43,6 +43,14 @@ export const getSymbolSource = (
 ): Promise<{ id: number; name: string; kind: string; file_path: string; line_number: number | null; src_code: string }> =>
   client.get(`/symbols/${symbolId}/source`).then((r) => r.data)
 
+export interface ClassInterfaces {
+  all_interfaces: string[]
+  per_class: { class: string; qualified_name: string; interfaces: string[] }[]
+}
+
+export const getClassInterfaces = (className: string): Promise<ClassInterfaces> =>
+  client.get(`/classes/${encodeURIComponent(className)}/interfaces`).then((r) => r.data)
+
 export const getFileSymbols = (filePath: string): Promise<Symbol[]> =>
   client.get(`/files/${filePath}/symbols`).then((r) => r.data)
 

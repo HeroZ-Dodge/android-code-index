@@ -70,19 +70,15 @@ export interface ModuleOverview {
   files: number
 }
 
-export interface DepRecord {
-  module: string
+export interface DirectDep {
   depends_on: string
-  dependency_type: 'module' | 'external'
-  dependency_scope: string
-  syntax: 'component' | 'project' | 'external'
-  raw_declaration: string
-  source_file: string
+  syntax: 'component' | 'project'
+  scope: string
 }
 
 export interface ModuleDeps {
-  direct: DepRecord[]
-  indirect: { depends_on: string; depth: number }[]
+  sdk_deps: DirectDep[]
+  impl_deps: DirectDep[]
 }
 
 export interface ModuleFile {

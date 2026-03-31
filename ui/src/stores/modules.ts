@@ -25,7 +25,8 @@ export const useModuleStore = defineStore('modules', () => {
     }
   }
 
-  async function selectModule(module: string) {
+  // 选中模块时只加载 overview + files，不预加载 deps（deps 按需懒加载）
+  async function selectModuleFiles(module: string) {
     selectedModule.value = module
     const tasks: Promise<void>[] = []
 
@@ -33,13 +34,6 @@ export const useModuleStore = defineStore('modules', () => {
       tasks.push(
         getModuleOverview(module)
           .then((v: ModuleOverview) => { overviewCache.value[module] = v })
-          .catch(() => {})
-      )
-    }
-    if (!depsCache.value[module]) {
-      tasks.push(
-        getModuleDeps(module)
-          .then((v: ModuleDeps) => { depsCache.value[module] = v })
           .catch(() => {})
       )
     }
@@ -53,10 +47,24 @@ export const useModuleStore = defineStore('modules', () => {
     await Promise.all(tasks)
   }
 
+  // 懒加载 deps，仅在用户切换到依赖 Tab 时调用
+  async function loadDeps(module: string) {
+    if (depsCache.value[module] && 'sdk_deps' in depsCache.value[module]) return
+    try {
+      const v = await getModuleDeps(module)
+      depsCache.value[module] = v
+    } catch {}
+  }
+
+  // 兼容旧调用（onMounted 路由恢复时使用）
+  async function selectModule(module: string) {
+    return selectModuleFiles(module)
+  }
+
   return {
     moduleList, selectedModule,
     overviewCache, depsCache, filesCache,
     loading, error,
-    loadList, selectModule,
+    loadList, selectModule, selectModuleFiles, loadDeps,
   }
 })

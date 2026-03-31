@@ -54,14 +54,14 @@ def discover_modules(project_root: Path) -> dict[str, Path]:
     # 先收集标准 include 声明
     modules: dict[str, Path] = {}
     for m in _INCLUDE_RE.finditer(text):
-        module_name = m.group(1)                     # e.g. ":app"
-        # 推断默认路径：":core:network" → project_root/core/network
-        rel = module_name.lstrip(":").replace(":", "/")
+        module_name = m.group(1).lstrip(":")         # e.g. "app"
+        # 推断默认路径："core:network" → project_root/core/network
+        rel = module_name.replace(":", "/")
         modules[module_name] = project_root / rel
 
     # 再处理自定义 projectDir
     for m in _CUSTOM_PATH_RE.finditer(text):
-        module_name = m.group("module")              # e.g. ":libs:foo"
+        module_name = m.group("module").lstrip(":")  # e.g. "libs:foo"
         custom_path = m.group("path")
         # 相对路径相对于 project_root
         resolved = (project_root / custom_path).resolve()
@@ -164,9 +164,23 @@ def scan_module(module_name: str, module_root: Path) -> list[SourceFile]:
 def scan_project(project_root: Path) -> list[SourceFile]:
     """
     扫描整个 Android 项目，返回所有模块的源文件列表。
+
+    额外包含 gradlescript/component.gradle（SDK 层依赖配置文件）。
     """
     modules = discover_modules(project_root)
     all_files: list[SourceFile] = []
     for module_name, module_root in modules.items():
         all_files.extend(scan_module(module_name, module_root))
+
+    # SDK 层依赖配置文件：gradlescript/component.gradle
+    # 使用 '_component_gradle' 作为占位模块名，解析器内部会正确设置每条记录的 module 字段
+    component_gradle = project_root / "gradlescript" / "component.gradle"
+    if component_gradle.is_file():
+        all_files.append(SourceFile(
+            file_path=component_gradle.resolve(),
+            module="_component_gradle",
+            file_type="gradle",
+            source_set="config",
+        ))
+
     return all_files

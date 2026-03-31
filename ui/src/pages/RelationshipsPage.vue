@@ -3,14 +3,7 @@ import { ref } from 'vue'
 import { getInheritance, getSubclasses, getImplementations } from '@/api/symbols'
 import { getModuleDeps } from '@/api/modules'
 import { useDrawerStore } from '@/stores/drawer'
-import { use } from 'echarts/core'
-import { GraphChart } from 'echarts/charts'
-import { TooltipComponent, LegendComponent } from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
-import VChart from 'vue-echarts'
-import type { Symbol } from '@/types'
-
-use([GraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
+import type { Symbol, ModuleDeps } from '@/types'
 
 const drawer = useDrawerStore()
 const activeTab = ref('inheritance')
@@ -59,70 +52,26 @@ async function loadImplementations() {
   }
 }
 
-// ── Tab 3: 模块依赖图 ──
+// ── Tab 3: 模块依赖 ──
 const moduleInput = ref('')
-const graphOption = ref<any>(null)
-const graphError = ref('')
-const graphLoading = ref(false)
-
-const colorMap: Record<string, string> = {}
-const palette = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#14b8a6']
-let colorIdx = 0
-
-function nodeColor(mod: string) {
-  if (!colorMap[mod]) {
-    colorMap[mod] = palette[colorIdx++ % palette.length]
-  }
-  return colorMap[mod]
-}
+const moduleDeps = ref<ModuleDeps | null>(null)
+const queriedModule = ref('')
+const depsError = ref('')
+const depsLoading = ref(false)
 
 async function loadDependencyGraph() {
-  if (!moduleInput.value.trim()) return
-  graphLoading.value = true
-  graphError.value = ''
+  const mod = moduleInput.value.trim()
+  if (!mod) return
+  depsLoading.value = true
+  depsError.value = ''
+  moduleDeps.value = null
   try {
-    const deps = await getModuleDeps(moduleInput.value.trim())
-    const nodeSet = new Set<string>([moduleInput.value.trim()])
-    deps.direct.forEach((d: { depends_on: string }) => nodeSet.add(d.depends_on))
-    deps.indirect.forEach((d: { depends_on: string }) => nodeSet.add(d.depends_on))
-
-    const nodes = [...nodeSet].map((n) => ({
-      id: n,
-      name: n,
-      symbolSize: n === moduleInput.value.trim() ? 30 : 20,
-      itemStyle: { color: nodeColor(n) },
-    }))
-
-    const edges = [
-      ...deps.direct.map((d: { depends_on: string }) => ({
-        source: moduleInput.value.trim(),
-        target: d.depends_on,
-        lineStyle: { width: 2 },
-      })),
-      ...deps.indirect.map((d: { depends_on: string }) => ({
-        source: moduleInput.value.trim(),
-        target: d.depends_on,
-        lineStyle: { width: 1, type: 'dashed' as const, opacity: 0.5 },
-      })),
-    ]
-
-    graphOption.value = {
-      tooltip: { formatter: (p: any) => p.data.id ?? '' },
-      series: [{
-        type: 'graph',
-        layout: 'force',
-        force: { repulsion: 200, gravity: 0.1, edgeLength: 120 },
-        roam: true,
-        label: { show: true, fontSize: 10 },
-        data: nodes,
-        edges,
-        edgeSymbol: ['none', 'arrow'],
-      }],
-    }
+    moduleDeps.value = await getModuleDeps(mod)
+    queriedModule.value = mod
   } catch (e: any) {
-    graphError.value = e?.message ?? '查询失败'
+    depsError.value = e?.message ?? '查询失败'
   } finally {
-    graphLoading.value = false
+    depsLoading.value = false
   }
 }
 </script>
@@ -189,20 +138,187 @@ async function loadDependencyGraph() {
         </el-table>
       </el-tab-pane>
 
-      <!-- 模块依赖图 -->
-      <el-tab-pane label="模块依赖图" name="deps">
+      <!-- 模块依赖 -->
+      <el-tab-pane label="模块依赖" name="deps">
         <el-row :gutter="12" style="margin-bottom: 16px">
           <el-col :span="16">
-            <el-input v-model="moduleInput" placeholder="输入模块名（如 :app）" @keydown.enter="loadDependencyGraph" />
+            <el-input v-model="moduleInput" placeholder="输入模块名（如 compfeed）" @keydown.enter="loadDependencyGraph" />
           </el-col>
           <el-col :span="8">
-            <el-button type="primary" :loading="graphLoading" @click="loadDependencyGraph" style="width: 100%">生成依赖图</el-button>
+            <el-button type="primary" :loading="depsLoading" @click="loadDependencyGraph" style="width: 100%">查询依赖</el-button>
           </el-col>
         </el-row>
-        <el-alert v-if="graphError" :title="graphError" type="error" :closable="false" style="margin-bottom: 12px" />
-        <v-chart v-if="graphOption" :option="graphOption" style="height: 500px" autoresize />
-        <div v-else style="color: #9ca3af; text-align: center; padding: 48px">输入模块名后点击生成</div>
+        <el-alert v-if="depsError" :title="depsError" type="error" :closable="false" style="margin-bottom: 12px" />
+
+        <div v-if="moduleDeps" class="dep-tree">
+          <!-- 根节点：被查询的模块 -->
+          <div class="dep-root">
+            <span class="dep-module-name">{{ queriedModule }}</span>
+            <el-tag size="small" type="info" style="margin-left: 8px">
+              {{ moduleDeps.impl_deps.length + moduleDeps.sdk_deps.length }} 个依赖
+            </el-tag>
+          </div>
+
+          <!-- 实现层依赖 -->
+          <div class="dep-section">
+            <div class="dep-section-header" :class="moduleDeps.sdk_deps.length ? 'has-sibling' : 'last-child'">
+              <span class="dep-branch-line"></span>
+              <span class="dep-section-title">实现层依赖</span>
+              <span class="dep-section-meta">build.gradle · {{ moduleDeps.impl_deps.length }} 个</span>
+              <el-tag v-if="moduleDeps.impl_deps.some(d => d.syntax === 'project')" size="small" type="warning" style="margin-left: 6px">⚠ 含 project()</el-tag>
+            </div>
+            <div class="dep-section-body" :class="moduleDeps.sdk_deps.length ? 'has-sibling' : ''">
+              <div v-if="!moduleDeps.impl_deps.length" class="dep-empty">无</div>
+              <div
+                v-for="(d, i) in moduleDeps.impl_deps"
+                :key="d.depends_on"
+                class="dep-item"
+                :class="i === moduleDeps.impl_deps.length - 1 ? 'last' : ''"
+              >
+                <span class="dep-item-line"></span>
+                <span class="dep-item-name" :class="d.syntax === 'project' ? 'is-project' : ''">{{ d.depends_on }}</span>
+                <el-tag
+                  size="small"
+                  :type="d.syntax === 'component' ? 'success' : 'warning'"
+                  style="margin-left: 8px; font-size: 10px"
+                >{{ d.syntax }}</el-tag>
+                <span v-if="d.syntax === 'project'" style="margin-left: 4px; font-size: 11px; color: #f59e0b">⚠</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 接口层依赖 -->
+          <div class="dep-section dep-section-last">
+            <div class="dep-section-header last-child">
+              <span class="dep-branch-line last"></span>
+              <span class="dep-section-title">接口层依赖</span>
+              <span class="dep-section-meta">component.gradle · {{ moduleDeps.sdk_deps.length }} 个</span>
+            </div>
+            <div class="dep-section-body">
+              <div v-if="!moduleDeps.sdk_deps.length" class="dep-empty">无</div>
+              <div
+                v-for="(d, i) in moduleDeps.sdk_deps"
+                :key="d.depends_on"
+                class="dep-item"
+                :class="i === moduleDeps.sdk_deps.length - 1 ? 'last' : ''"
+              >
+                <span class="dep-item-line"></span>
+                <span class="dep-item-name">{{ d.depends_on }}</span>
+                <el-tag size="small" type="primary" style="margin-left: 8px; font-size: 10px">component</el-tag>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="!depsLoading" style="color: #9ca3af; text-align: center; padding: 48px; font-size: 13px">
+          输入模块名后点击查询
+        </div>
       </el-tab-pane>
     </el-tabs>
   </el-card>
 </template>
+
+<style scoped>
+.dep-tree {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  padding: 16px 8px;
+  line-height: 1.8;
+}
+
+.dep-root {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  background: #f0f4ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  margin-bottom: 4px;
+}
+
+.dep-module-name {
+  font-weight: 700;
+  color: #2d3561;
+  font-size: 14px;
+}
+
+.dep-section {
+  margin-left: 16px;
+}
+
+.dep-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  color: #374151;
+  font-weight: 600;
+  font-size: 12px;
+  position: relative;
+}
+
+.dep-section-header::before {
+  content: '├─';
+  color: #9ca3af;
+  font-family: monospace;
+  margin-right: 4px;
+}
+
+.dep-section-header.last-child::before {
+  content: '└─';
+}
+
+.dep-branch-line { display: none; }
+
+.dep-section-title {
+  color: #1f2937;
+}
+
+.dep-section-meta {
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 400;
+}
+
+.dep-section-body {
+  margin-left: 20px;
+  border-left: 1px dashed #e5e7eb;
+  padding-left: 12px;
+  margin-bottom: 8px;
+}
+
+.dep-empty {
+  color: #9ca3af;
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.dep-item {
+  display: flex;
+  align-items: center;
+  padding: 3px 0;
+  position: relative;
+}
+
+.dep-item::before {
+  content: '├─';
+  color: #9ca3af;
+  margin-right: 6px;
+  font-family: monospace;
+}
+
+.dep-item.last::before {
+  content: '└─';
+}
+
+.dep-item-line { display: none; }
+
+.dep-item-name {
+  color: #1d4ed8;
+  font-weight: 500;
+}
+
+.dep-item-name.is-project {
+  color: #92400e;
+}
+</style>
