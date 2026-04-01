@@ -95,9 +95,14 @@ Android 项目代码结构化索引系统，提供高效的代码搜索和查询
 
 ### 安装依赖
 
+推荐你直接让AI工具读取这段配置命令后，让AI帮你初始化，包括完成 python 、 npm 等依赖的安装
+
 ```bash
-# 创建虚拟环境
+# 创建虚拟环境, 确保python 版本在3.11以上
 python3 -m venv .venv
+# 如果你本地使用brew安装的python ，指定python路径创建虚拟环境
+/opt/homebrew/bin/python3.11 -m venv .venv
+
 source .venv/bin/activate  # macOS/Linux
 # 或 .venv\Scripts\activate  # Windows
 
@@ -123,6 +128,9 @@ python main.py index watch /path/to/your/android/project_name --debounce 5
 
 ### 启动服务
 
+# 指定项目启动 HTTP API
+python main.py serve http --project project_name
+
 ```bash
 # 启动 MCP Server（供 Claude Code 调用）
 python main.py serve mcp
@@ -130,8 +138,6 @@ python main.py serve mcp
 # 启动 MCP Server（带后台文件监听，自动更新索引）
 python main.py serve mcp --watch
 
-# 指定项目启动 HTTP API
-python main.py serve http --project project_name
 ```
 
 ### 查看统计
@@ -280,9 +286,10 @@ curl "http://localhost:8000/modules/:compfeed/dependencies"
 
 ```
 
+//添加mcp服务
 claude mcp add gl-code-index \
-  -- /Users/dodge/Documents/android-code-index/.venv/bin/python3.11 \
-     /Users/dodge/Documents/android-code-index/main.py \
+  -- <android-code-index's path>/.venv/bin/python3.11 \
+     <android-code-index's path>/main.py \
      serve mcp --watch
 
 ```
