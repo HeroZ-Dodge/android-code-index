@@ -128,10 +128,12 @@ python main.py index watch /path/to/your/android/project_name --debounce 5
 
 ### 启动服务
 
+
+```bash
+
 # 指定项目启动 HTTP API
 python main.py serve http --project project_name
 
-```bash
 # 启动 MCP Server（供 Claude Code 调用）
 python main.py serve mcp
 
@@ -154,7 +156,7 @@ python main.py projects
 ```
 
 
-### 查看前端UI
+### 查看前端UI (依赖 HTTP API ，需要启动 serve http)
 
 ```bash
 # 新建终端
